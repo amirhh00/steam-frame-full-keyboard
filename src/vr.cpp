@@ -351,6 +351,11 @@ int run_vr(App& app, VrInstance& instance, double duration) {
     }
     std::array<bool, vr::k_unMaxTrackedDeviceCount> hovered_devices{};
     std::map<unsigned, vr::TrackedDeviceIndex_t> pointer_devices;
+    struct DrumstickState {
+        bool pressed{false};
+        unsigned pointer{0};
+    };
+    std::map<vr::TrackedDeviceIndex_t, DrumstickState> drumsticks;
     auto cancel_device = [&](vr::TrackedDeviceIndex_t device) {
         for (auto it = pointer_devices.begin(); it != pointer_devices.end();) {
             if (it->second == device) {
@@ -360,6 +365,11 @@ int run_vr(App& app, VrInstance& instance, double duration) {
             } else {
                 ++it;
             }
+        }
+        if (auto it = drumsticks.find(device); it != drumsticks.end() && it->second.pressed) {
+            app.cancel_pointer(it->second.pointer);
+            feedback.cancel_pointer(it->second.pointer);
+            it->second.pressed = false;
         }
     };
     struct ReleaseBeforeVrShutdown {
@@ -419,6 +429,13 @@ int run_vr(App& app, VrInstance& instance, double duration) {
         stop_drag();
         hovered_devices.fill(false);
         pointer_devices.clear();
+        for (auto& [dev, drum] : drumsticks) {
+            if (drum.pressed) {
+                app.cancel_pointer(drum.pointer);
+                feedback.cancel_pointer(drum.pointer);
+                drum.pressed = false;
+            }
+        }
         grip_input.reset();
         if (visible) {
             check(vr::VROverlay()->HideOverlay(panel.handle()), "Hide keyboard");
@@ -594,6 +611,80 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                     feedback.cancel();
                     app.set_dragging(true);
                     break;
+                }
+            }
+        }
+        if (visible && displayed.ready() && !drag.active()) {
+            const auto panel_t = displayed.transform();
+            const double pw = displayed.width();
+            const double ph = pw * (static_cast<double>(panel_height) / panel_width);
+            for (vr::TrackedDeviceIndex_t device = 0; device < vr::k_unMaxTrackedDeviceCount; ++device) {
+                if (vr::VRSystem()->GetTrackedDeviceClass(device) != vr::TrackedDeviceClass_Controller) {
+                    continue;
+                }
+                const bool grabbing = std::any_of(grips.begin(), grips.end(), [&](const auto& grip) {
+                    return grip.active && grip.held && grip.device == device;
+                });
+                if (grabbing) {
+                    continue;
+                }
+                auto ctrl = read_controller(device);
+                auto& drum = drumsticks[device];
+                drum.pointer = 100 + device;
+                if (!ctrl) {
+                    if (drum.pressed) {
+                        app.up(drum.pointer, 0, 0);
+                        feedback.release(drum.pointer);
+                        drum.pressed = false;
+                    }
+                    continue;
+                }
+                const double fx = -(*ctrl)[0][2];
+                const double fy = -(*ctrl)[1][2];
+                const double fz = -(*ctrl)[2][2];
+                const double tip_x = (*ctrl)[0][3] + fx * 0.085;
+                const double tip_y = (*ctrl)[1][3] + fy * 0.085;
+                const double tip_z = (*ctrl)[2][3] + fz * 0.085;
+
+                const double dx = tip_x - panel_t[0][3];
+                const double dy = tip_y - panel_t[1][3];
+                const double dz = tip_z - panel_t[2][3];
+
+                const double local_x = dx * panel_t[0][0] + dy * panel_t[1][0] + dz * panel_t[2][0];
+                const double local_y = dx * panel_t[0][1] + dy * panel_t[1][1] + dz * panel_t[2][1];
+                const double local_z = dx * panel_t[0][2] + dy * panel_t[1][2] + dz * panel_t[2][2];
+
+                const double px = (local_x / pw + 0.5) * panel_width;
+                const double py = (0.5 - local_y / ph) * panel_height;
+
+                const bool on_panel = (px >= 0.0 && px < panel_width && py >= 0.0 && py < panel_height);
+                if (on_panel) {
+                    if (!drum.pressed) {
+                        if (local_z <= 0.006 && local_z >= -0.05) {
+                            drum.pressed = true;
+                            if (app.down(drum.pointer, px, py, now)) {
+                                feedback.press(drum.pointer, device);
+                            }
+                        } else if (local_z > 0.006 && local_z <= 0.035) {
+                            if (app.move(drum.pointer, px, py)) {
+                                feedback.hover(device);
+                            }
+                        }
+                    } else {
+                        if (local_z > 0.018 || local_z < -0.06) {
+                            drum.pressed = false;
+                            if (app.up(drum.pointer, px, py)) {
+                                feedback.release(drum.pointer);
+                            }
+                        } else {
+                            app.move(drum.pointer, px, py);
+                        }
+                    }
+                } else if (drum.pressed) {
+                    drum.pressed = false;
+                    if (app.up(drum.pointer, px, py)) {
+                        feedback.release(drum.pointer);
+                    }
                 }
             }
         }

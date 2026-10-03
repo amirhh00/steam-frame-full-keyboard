@@ -308,4 +308,147 @@ std::vector<std::string> split_utf8(const std::string& text, std::size_t limit) 
     }
     return chunks;
 }
+
+namespace {
+std::string replace_all_ci(const std::string& input, const std::string& from, const std::string& to) {
+    if (from.empty()) {
+        return input;
+    }
+    std::string result;
+    std::size_t i = 0;
+    while (i < input.size()) {
+        if (i + from.size() <= input.size()) {
+            bool match = true;
+            for (std::size_t j = 0; j < from.size(); ++j) {
+                if (std::tolower(static_cast<unsigned char>(input[i + j])) !=
+                    std::tolower(static_cast<unsigned char>(from[j]))) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                result += to;
+                i += from.size();
+                continue;
+            }
+        }
+        result += input[i++];
+    }
+    return result;
+}
+} // namespace
+
+VoiceResult parse_voice_result(const std::string& raw) {
+    std::string text = clean_transcript(raw);
+    if (text.empty()) {
+        return {VoiceCommand::NoCommand, ""};
+    }
+
+    // Check for pure voice editing commands
+    std::string lower;
+    for (char c : text) {
+        if (c != '.' && c != '!' && c != '?' && c != ',') {
+            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+    }
+    while (!lower.empty() && lower.front() == ' ') {
+        lower.erase(lower.begin());
+    }
+    while (!lower.empty() && lower.back() == ' ') {
+        lower.pop_back();
+    }
+
+    if (lower == "backspace" || lower == "delete") {
+        return {VoiceCommand::Backspace, ""};
+    }
+    if (lower == "scratch that" || lower == "delete that" || lower == "undo") {
+        return {VoiceCommand::ScratchThat, ""};
+    }
+    if (lower == "enter" || lower == "new line" || lower == "newline" || lower == "submit" ||
+        lower == "return") {
+        return {VoiceCommand::Enter, ""};
+    }
+    if (lower == "select all") {
+        return {VoiceCommand::SelectAll, ""};
+    }
+    if (lower == "clear all" || lower == "clear text") {
+        return {VoiceCommand::Clear, ""};
+    }
+
+    // Replace multi-word and single-word spoken punctuation
+    static const std::vector<std::pair<std::string, std::string>> punctuation_patterns = {
+        {"exclamation point", "!"},
+        {"exclamation mark", "!"},
+        {"question mark", "?"},
+        {"full stop", "."},
+        {"new paragraph", "\n\n"},
+        {"new line", "\n"},
+        {"newline", "\n"},
+        {"next line", "\n"},
+        {"open quotation", "\""},
+        {"close quotation", "\""},
+        {"open quote", "\""},
+        {"close quote", "\""},
+        {"end quote", "\""},
+        {"open parenthesis", "("},
+        {"close parenthesis", ")"},
+        {"open paren", "("},
+        {"close paren", ")"},
+        {" period", "."},
+        {" comma", ","},
+        {" colon", ":"},
+        {" semicolon", ";"},
+        {" hyphen", "-"},
+        {" dash", "-"},
+    };
+
+    std::string formatted = text;
+    for (const auto& [pattern, replacement] : punctuation_patterns) {
+        formatted = replace_all_ci(formatted, pattern, replacement);
+    }
+    if (formatted.ends_with("period") || formatted.ends_with("Period")) {
+        formatted = formatted.substr(0, formatted.size() - 6) + ".";
+    }
+
+    // Clean spacing: remove space before punctuation
+    std::string cleaned_spacing;
+    cleaned_spacing.reserve(formatted.size());
+    for (std::size_t i = 0; i < formatted.size(); ++i) {
+        char c = formatted[i];
+        if (c == ' ') {
+            if (i + 1 < formatted.size()) {
+                char next = formatted[i + 1];
+                if (next == '.' || next == ',' || next == '?' || next == '!' || next == ':' ||
+                    next == ';' || next == ')' || next == '\n') {
+                    continue;
+                }
+            }
+            if (!cleaned_spacing.empty() && cleaned_spacing.back() == '\n') {
+                continue;
+            }
+        }
+        if (c == '(' && i + 1 < formatted.size() && formatted[i + 1] == ' ') {
+            cleaned_spacing += '(';
+            ++i;
+            continue;
+        }
+        cleaned_spacing += c;
+    }
+
+    // Capitalize start of text and letters after sentence endings
+    bool cap_next = true;
+    for (std::size_t i = 0; i < cleaned_spacing.size(); ++i) {
+        char c = cleaned_spacing[i];
+        if (cap_next && c >= 'a' && c <= 'z') {
+            cleaned_spacing[i] = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            cap_next = false;
+        } else if (c == '.' || c == '?' || c == '!' || c == '\n') {
+            cap_next = true;
+        } else if (c != ' ') {
+            cap_next = false;
+        }
+    }
+
+    return {VoiceCommand::NoCommand, cleaned_spacing};
+}
 } // namespace framekeyboard

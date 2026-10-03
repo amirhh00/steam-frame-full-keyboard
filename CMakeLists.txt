@@ -29,6 +29,7 @@ add_custom_command(OUTPUT "${IME_HEADER}" "${IME_CODE}"
     DEPENDS "${IME_XML}" VERBATIM)
 pkg_check_modules(SDL REQUIRED IMPORTED_TARGET sdl2)
 pkg_check_modules(VULKAN REQUIRED IMPORTED_TARGET vulkan)
+pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
 
 file(GLOB LAYOUT_FILES CONFIGURE_DEPENDS layouts/*.json)
 file(GLOB PROFILE_FILES CONFIGURE_DEPENDS layouts/*.json languages/*.json themes/*.json)
@@ -42,7 +43,7 @@ add_custom_command(OUTPUT "${PROFILE_HEADER}"
     VERBATIM)
 add_library(keyboard_core src/config.cpp src/input.cpp src/panel.cpp src/app.cpp src/instance.cpp src/placement.cpp src/placement_store.cpp src/grip.cpp src/ei_input.cpp src/japanese.cpp src/cjk.cpp src/text_input.cpp src/dictation.cpp "${IME_HEADER}" "${IME_CODE}" "${PROFILE_HEADER}")
 target_include_directories(keyboard_core PUBLIC include PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_link_libraries(keyboard_core PUBLIC PkgConfig::NATIVE PkgConfig::EI ${CMAKE_DL_LIBS})
+target_link_libraries(keyboard_core PUBLIC PkgConfig::NATIVE PkgConfig::EI PkgConfig::X11 ${CMAKE_DL_LIBS})
 target_compile_options(keyboard_core PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
 # Frame already supplies these engines. Minimal host builds can still run the
 # ordinary keyboard; unsupported composition profiles fail explicitly on Apply.
@@ -166,7 +167,6 @@ if(BUILD_TESTING)
         endif()
     endif()
     # Opt-in only: maps a disposable window and verifies focus before each key.
-    pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
     add_executable(unicode-target-probe tests/unicode_target_probe.cpp)
     target_link_libraries(unicode-target-probe PRIVATE keyboard_core PkgConfig::X11)
     add_executable(japanese-target-probe tests/japanese_target_probe.cpp)

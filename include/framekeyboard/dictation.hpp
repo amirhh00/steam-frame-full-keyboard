@@ -74,4 +74,22 @@ std::string clean_transcript(const std::string& text);
 // breaking a multi-byte sequence. Gamescope commits are limited to 32.
 std::vector<std::string> split_utf8(const std::string& text, std::size_t limit);
 
+enum class VoiceCommand {
+    NoCommand,
+    Backspace,
+    ScratchThat,
+    Enter,
+    SelectAll,
+    Clear,
+};
+
+struct VoiceResult {
+    VoiceCommand command{VoiceCommand::NoCommand};
+    std::string text;
+};
+
+// Parses voice commands (e.g. "scratch that", "backspace", "enter") or formats
+// spoken punctuation ("period", "comma", "question mark", "new line") and capitalization.
+VoiceResult parse_voice_result(const std::string& raw);
+
 } // namespace framekeyboard

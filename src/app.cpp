@@ -1,5 +1,7 @@
 #include "framekeyboard/app.hpp"
 
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
 #include <algorithm>
 #include <chrono>
 #include <glib.h>
@@ -16,6 +18,56 @@ double monotonic_seconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 namespace {
+std::string read_system_clipboard() {
+    Display* display = XOpenDisplay(nullptr);
+    if (!display) {
+        return {};
+    }
+    Atom clipboard = XInternAtom(display, "CLIPBOARD", False);
+    Atom utf8 = XInternAtom(display, "UTF8_STRING", False);
+    Atom target_prop = XInternAtom(display, "FRAMEKEYBOARD_CLIP", False);
+    Window window = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 1, 1, 0, 0, 0);
+
+    XConvertSelection(display, clipboard, utf8, target_prop, window, CurrentTime);
+    XFlush(display);
+
+    std::string result;
+    XEvent event;
+    for (int i = 0; i < 20; ++i) {
+        if (XCheckTypedWindowEvent(display, window, SelectionNotify, &event)) {
+            if (event.xselection.property != None) {
+                Atom actual_type;
+                int actual_format;
+                unsigned long nitems = 0, bytes_after = 0;
+                unsigned char* prop = nullptr;
+                if (XGetWindowProperty(display, window, target_prop, 0, 65536, True, AnyPropertyType,
+                                       &actual_type, &actual_format, &nitems, &bytes_after,
+                                       &prop) == Success) {
+                    if (prop && nitems > 0) {
+                        result.assign(reinterpret_cast<const char*>(prop), nitems);
+                        XFree(prop);
+                    }
+                }
+            }
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    XDestroyWindow(display, window);
+    XCloseDisplay(display);
+    if (!result.empty() &&
+        !g_utf8_validate(result.c_str(), static_cast<gssize>(result.size()), nullptr)) {
+        return {};
+    }
+    return result;
+}
+#ifdef None
+#undef None
+#endif
+#ifdef Success
+#undef Success
+#endif
+
 bool same_keymap(const Language& a, const Language& b) {
     return std::tie(a.rules, a.model, a.keymap, a.variant, a.options) ==
            std::tie(b.rules, b.model, b.keymap, b.variant, b.options);
@@ -291,6 +343,26 @@ std::vector<Control> App::controls() const {
                 }
             }
         }
+        if (clipboard_open_) {
+            result.push_back({"clip-title", "Clipboard History", {20, 148, 160, 42}});
+            if (clipboard_history_.empty()) {
+                result.push_back({"clip-empty", "(No text copied yet)", {190, 148, 380, 42}});
+            } else {
+                const int count = std::min(4, static_cast<int>(clipboard_history_.size()));
+                for (int i = 0; i < count; ++i) {
+                    std::string label = clipboard_history_[i];
+                    std::replace(label.begin(), label.end(), '\n', ' ');
+                    if (label.size() > 18) {
+                        label = label.substr(0, 17) + "...";
+                    }
+                    result.push_back({"clip-" + std::to_string(i),
+                                      std::to_string(i + 1) + ": " + label,
+                                      {190.0 + i * 270, 148, 260, 42}});
+                }
+                result.push_back({"clip-clear", "Clear", {1370, 148, 100, 42}});
+            }
+            result.push_back({"clip-close", "Close", {1480, 148, 100, 42}});
+        }
         return result;
     }
     const auto& language = profiles_.languages.at(pending_.language);
@@ -353,6 +425,7 @@ PanelView App::view() const {
                        : "Typing disabled: choose a profile matching the target keymap used at launch.";
     }
     v.settings = settings_open_;
+    v.clipboard = clipboard_open_;
     v.composing = japanese() && !japanese_latin_;
     if (v.composing) {
         v.preedit = composition_.preedit(true);
@@ -475,6 +548,9 @@ bool App::down(unsigned pointer, double x, double y, double now) {
         const bool accepted =
             keyboard_.down(pointer, *key, now, local, local ? 0 : native_code(*key, modifiers));
         if (accepted) {
+            if (key->action == "paste") {
+                paste_down_time_[pointer] = now;
+            }
             try {
                 if (ime_local) {
                     japanese_key(*key, true, modifiers);
@@ -510,6 +586,23 @@ bool App::up(unsigned pointer, double x, double y) {
         return false;
     }
     text_repeats_.erase(pointer);
+    if (paste_long_pressed_.erase(pointer)) {
+        paste_down_time_.erase(pointer);
+        const bool key_released = keyboard_.up(pointer);
+        dirty = true;
+        return key_released;
+    }
+    if (paste_down_time_.erase(pointer)) {
+        if (options_.input != "none" && gate_.enabled) {
+            gate_.send(KEY_LEFTCTRL, 1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            gate_.send(KEY_V, 1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            gate_.send(KEY_V, 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            gate_.send(KEY_LEFTCTRL, 0);
+        }
+    }
     const bool key_released = keyboard_.up(pointer);
     move(pointer, x, y);
     const auto it = pressed_controls_.find(pointer);
@@ -530,6 +623,8 @@ bool App::up(unsigned pointer, double x, double y) {
 
 void App::cancel_pointer(unsigned pointer) {
     text_repeats_.erase(pointer);
+    paste_down_time_.erase(pointer);
+    paste_long_pressed_.erase(pointer);
     keyboard_.cancel_pointer(pointer);
     pressed_controls_.erase(pointer);
     hovered_.erase(pointer);
@@ -537,6 +632,9 @@ void App::cancel_pointer(unsigned pointer) {
 }
 void App::cancel(bool discard_composition) {
     text_repeats_.clear();
+    paste_down_time_.clear();
+    paste_long_pressed_.clear();
+    clipboard_open_ = false;
     if (dictation_) {
         dictation_->cancel();
     }
@@ -574,10 +672,12 @@ bool App::tick(double now) {
                 dirty = true;
                 break;
             case Dictation::Event::Kind::Text: {
-                std::string cleaned = clean_transcript(ev.payload);
-                if (!cleaned.empty()) {
-                    status_ = "Recognized: " + cleaned;
-                    type_dictation(cleaned + " ");
+                VoiceResult vr = parse_voice_result(ev.payload);
+                if (vr.command != VoiceCommand::NoCommand) {
+                    execute_voice_command(vr.command);
+                } else if (!vr.text.empty()) {
+                    status_ = "Recognized: " + vr.text;
+                    type_dictation(vr.text + " ");
                 } else {
                     status_ = "No speech detected";
                 }
@@ -590,6 +690,16 @@ bool App::tick(double now) {
                 break;
             }
         }
+    }
+    for (auto it = paste_down_time_.begin(); it != paste_down_time_.end();) {
+        if (now - it->second >= 0.35) {
+            paste_long_pressed_.insert(it->first);
+            it = paste_down_time_.erase(it);
+            open_clipboard();
+            dirty = true;
+            continue;
+        }
+        ++it;
     }
     for (auto it = text_repeats_.begin(); it != text_repeats_.end();) {
         if (now >= it->second.next) {
@@ -901,6 +1011,82 @@ void App::type_dictation(const std::string& text) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 }
+void App::execute_voice_command(VoiceCommand command) {
+    if (options_.input == "none" || !gate_.enabled) {
+        return;
+    }
+    switch (command) {
+    case VoiceCommand::Backspace:
+        gate_.send(KEY_BACKSPACE, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        gate_.send(KEY_BACKSPACE, 0);
+        status_ = "Command: Backspace";
+        break;
+    case VoiceCommand::ScratchThat:
+        gate_.send(KEY_LEFTCTRL, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        gate_.send(KEY_BACKSPACE, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        gate_.send(KEY_BACKSPACE, 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        gate_.send(KEY_LEFTCTRL, 0);
+        status_ = "Command: Scratch that";
+        break;
+    case VoiceCommand::Enter:
+        gate_.send(KEY_ENTER, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        gate_.send(KEY_ENTER, 0);
+        status_ = "Command: Enter";
+        break;
+    case VoiceCommand::SelectAll:
+        gate_.send(KEY_LEFTCTRL, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        gate_.send(KEY_A, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        gate_.send(KEY_A, 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        gate_.send(KEY_LEFTCTRL, 0);
+        status_ = "Command: Select all";
+        break;
+    case VoiceCommand::Clear:
+        gate_.send(KEY_LEFTCTRL, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        gate_.send(KEY_A, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        gate_.send(KEY_A, 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        gate_.send(KEY_LEFTCTRL, 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        gate_.send(KEY_BACKSPACE, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        gate_.send(KEY_BACKSPACE, 0);
+        status_ = "Command: Clear";
+        break;
+    default:
+        break;
+    }
+}
+void App::open_clipboard() {
+    std::string text = read_system_clipboard();
+    if (!text.empty()) {
+        push_clipboard(text);
+    }
+    clipboard_open_ = true;
+    dirty = true;
+}
+void App::push_clipboard(const std::string& text) {
+    if (text.empty()) {
+        return;
+    }
+    auto it = std::find(clipboard_history_.begin(), clipboard_history_.end(), text);
+    if (it != clipboard_history_.end()) {
+        clipboard_history_.erase(it);
+    }
+    clipboard_history_.insert(clipboard_history_.begin(), text);
+    if (clipboard_history_.size() > 5) {
+        clipboard_history_.resize(5);
+    }
+}
 int App::native_code(const Key& key, const std::set<int>& mods) {
     if (!unicode_mode()) {
         return 0;
@@ -1040,6 +1226,29 @@ void App::action(const std::string& id) {
     if (const auto adjustment = adjustments.find(id); adjustment != adjustments.end()) {
         cancel();
         placement_actions_.push_back(adjustment->second);
+        return;
+    }
+    if (id == "clip-close") {
+        clipboard_open_ = false;
+        status_.clear();
+        dirty = true;
+        return;
+    }
+    if (id == "clip-clear") {
+        clipboard_history_.clear();
+        status_ = "Clipboard history cleared";
+        dirty = true;
+        return;
+    }
+    if (id.starts_with("clip-") && id.size() > 5 && std::isdigit(static_cast<unsigned char>(id[5]))) {
+        std::size_t idx = std::stoul(id.substr(5));
+        if (idx < clipboard_history_.size()) {
+            std::string text_to_paste = clipboard_history_[idx];
+            type_dictation(text_to_paste);
+            clipboard_open_ = false;
+            status_ = "Pasted from clipboard";
+            dirty = true;
+        }
         return;
     }
     if (id == "dictate") {

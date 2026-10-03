@@ -66,6 +66,8 @@ class App {
     const fs::path& config_dir() const { return options_.config_dir; }
     bool quitting() const { return quit_; }
     bool take_recenter();
+    void open_clipboard();
+    void push_clipboard(const std::string& text);
     bool dirty{true};
     PanelRenderer renderer;
     const Selection& selection() const { return settings_.active; }
@@ -85,6 +87,7 @@ class App {
     int native_code(const Key& key, const std::set<int>& mods);
     bool flush_text();
     void type_dictation(const std::string& text);
+    void execute_voice_command(VoiceCommand command);
     std::string pending_text_;
     struct TextRepeat {
         std::string text;
@@ -114,6 +117,10 @@ class App {
     bool dragging_{};
     bool interaction_active_{true};
     bool backend_ready_{true}, backend_can_resume_{};
+    bool clipboard_open_{false};
+    std::vector<std::string> clipboard_history_;
+    std::map<unsigned, double> paste_down_time_;
+    std::set<unsigned> paste_long_pressed_;
 };
 
 double monotonic_seconds();

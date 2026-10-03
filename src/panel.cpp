@@ -13,7 +13,7 @@ struct Placement {
 };
 Placement placement(const PanelView& view) {
     const double margin = view.theme->padding;
-    const double toolbar_height = view.composing ? 208 : normal_toolbar_height;
+    const double toolbar_height = (view.composing || view.clipboard) ? 208 : normal_toolbar_height;
     const double scale =
         std::min((panel_width - 2 * margin) / view.layout->width,
                  (panel_height - toolbar_height - 2 * margin - view.theme->depth) / view.layout->height);
@@ -315,7 +315,8 @@ void PanelRenderer::paint(const PanelView& view, double now, bool force_full) {
         previous_->caps != view.keyboard->caps() || previous_->num != view.keyboard->num() ||
         previous_->view.controls != view.controls || previous_->view.status != view.status ||
         previous_->view.settings != view.settings || previous_->view.composing != view.composing ||
-        previous_->view.preedit != view.preedit || previous_->view.key_labels != view.key_labels;
+        previous_->view.clipboard != view.clipboard || previous_->view.preedit != view.preedit ||
+        previous_->view.key_labels != view.key_labels;
     bool full = force_full || scene_changed || view.settings;
     std::vector<Rect> damage;
     animating_ = false;
@@ -419,13 +420,17 @@ void PanelRenderer::paint(const PanelView& view, double now, bool force_full) {
         }
         cairo_restore(cr);
     }
-    if (view.composing && !view.settings) {
+    if (view.composing && !view.settings && !view.clipboard) {
         const auto& method = view.language->input_method;
         const char* hint = method == "korean-2set" ? "Type → Space/Enter: commit · Esc: cancel"
                            : method.starts_with("chinese-")
                                ? "Pinyin → Space/1–5: select · Enter: commit · Esc: cancel"
                                : "Type → Space: convert · Enter: commit · Esc: cancel";
         label(cr, view.preedit.empty() ? hint : view.preedit, {20, 94, 1560, 40}, 27,
+              view.language->font, t.legend);
+    }
+    if (view.clipboard && !view.settings) {
+        label(cr, "Clipboard History (tap an item to paste, or Close)", {20, 94, 1560, 40}, 22,
               view.language->font, t.legend);
     }
     for (const auto& control : view.controls) {

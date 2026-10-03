@@ -24,6 +24,7 @@ struct PanelView {
     std::string status;
     bool settings{};
     bool composing{};
+    bool clipboard{};
     std::string preedit;
     std::map<std::string, std::string> key_labels;
     std::set<std::string> hovered;

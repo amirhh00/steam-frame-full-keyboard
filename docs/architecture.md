@@ -154,3 +154,21 @@ existing backend repeat path. Numpad navigation is sent as explicit Home/arrows/
 updates. Ctrl/Alt letter shortcuts and dedicated Copy/Paste search that map for
 the intended Latin symbol, with a conventional physical fallback where metadata
 is absent. This lookup neither changes the system keymap nor reads app text.
+
+## Direct touch (drumstick) typing and clipboard history
+
+Controller tips are tracked in the keyboard's coordinate plane. When a controller tip
+physically penetrates the key plane without trigger clicks, direct-touch drumstick typing
+fires key press transitions and haptic feedback with hysteresis release thresholds.
+
+Long-pressing (holding >= 0.35s) the dedicated Paste key in VR opens an in-VR clipboard
+history tray, allowing users to select and paste from recent clipboard snippets. A quick tap
+on Paste preserves standard single-press Ctrl+V delivery. Clipboard history is held strictly
+in memory and never logged or written to disk.
+
+## Voice editing and punctuation commands
+
+Spoken dictation automatically maps common editing commands ("scratch that", "backspace",
+"enter", "select all", "clear text") to their corresponding keyboard actions, and formats
+spoken punctuation phrases ("period", "comma", "question mark", "exclamation point", "new line")
+into clean punctuation with proper spacing and automatic sentence capitalization.

@@ -335,6 +335,136 @@ void dictation_tests() {
     }
     require(found_dictate, "dictate button present in controls with Dictate icon");
 }
+void voice_command_and_punctuation_tests() {
+    // Test pure voice editing commands
+    require(fk::parse_voice_result("scratch that").command == fk::VoiceCommand::ScratchThat,
+            "voice command: scratch that");
+    require(fk::parse_voice_result("delete that").command == fk::VoiceCommand::ScratchThat,
+            "voice command: delete that");
+    require(fk::parse_voice_result("undo").command == fk::VoiceCommand::ScratchThat,
+            "voice command: undo");
+    require(fk::parse_voice_result("backspace").command == fk::VoiceCommand::Backspace,
+            "voice command: backspace");
+    require(fk::parse_voice_result("delete").command == fk::VoiceCommand::Backspace,
+            "voice command: delete");
+    require(fk::parse_voice_result("enter").command == fk::VoiceCommand::Enter, "voice command: enter");
+    require(fk::parse_voice_result("newline").command == fk::VoiceCommand::Enter,
+            "voice command: newline");
+    require(fk::parse_voice_result("select all").command == fk::VoiceCommand::SelectAll,
+            "voice command: select all");
+    require(fk::parse_voice_result("clear text").command == fk::VoiceCommand::Clear,
+            "voice command: clear text");
+    require(fk::parse_voice_result("clear all").command == fk::VoiceCommand::Clear,
+            "voice command: clear all");
+
+    // Test spoken punctuation and capitalization
+    const auto r1 = fk::parse_voice_result("hello world period");
+    require(r1.command == fk::VoiceCommand::NoCommand, "not a command");
+    require(r1.text == "Hello world.", "spoken period formatting");
+
+    const auto r2 = fk::parse_voice_result("how are you question mark i am fine period");
+    require(r2.text == "How are you? I am fine.", "question mark and sentence capitalization");
+
+    const auto r3 = fk::parse_voice_result("look out exclamation point");
+    require(r3.text == "Look out!", "exclamation point formatting");
+
+    const auto r4 = fk::parse_voice_result("items comma one comma two comma three");
+    require(r4.text == "Items, one, two, three", "comma formatting and spacing");
+
+    const auto r5 = fk::parse_voice_result("line one new line line two");
+    require(r5.text == "Line one\nLine two", "new line formatting and capitalization");
+}
+
+void clipboard_tests() {
+    TemporaryDirectory directory;
+    fk::Options options;
+    options.config_dir = directory.path;
+    options.mode = "vr";
+    options.input = "uinput";
+    options.target_language = "en-us";
+    options.start_enabled = true;
+    Capture sink;
+    fk::App app(options, sink);
+    app.set_interaction_active(true);
+
+    app.push_clipboard("First clipboard snippet");
+    app.push_clipboard("Second clipboard snippet");
+    app.open_clipboard();
+
+    require(app.view().clipboard, "clipboard tray is open");
+
+    bool has_clip0 = false, has_clip1 = false, has_close = false, has_clear = false;
+    for (const auto& c : app.view().controls) {
+        if (c.id == "clip-0") {
+            has_clip0 = true;
+        }
+        if (c.id == "clip-1") {
+            has_clip1 = true;
+        }
+        if (c.id == "clip-close") {
+            has_close = true;
+        }
+        if (c.id == "clip-clear") {
+            has_clear = true;
+        }
+    }
+    require(has_clip0, "clip-0 present in controls");
+    require(has_clip1, "clip-1 present in controls");
+    require(has_close, "clip-close present in controls");
+    require(has_clear, "clip-clear present in controls");
+
+    // Clicking close button closes clipboard tray
+    for (const auto& control : app.view().controls) {
+        if (control.id == "clip-close") {
+            const double x = control.bounds.x + control.bounds.width / 2;
+            const double y = control.bounds.y + control.bounds.height / 2;
+            app.down(0, x, y, 1.0);
+            app.up(0, x, y);
+            break;
+        }
+    }
+    require(!app.view().clipboard, "clip-close closed clipboard tray");
+
+    // Quick tap on Paste emits Ctrl+V
+    std::pair<double, double> paste_pos{-1, -1};
+    const auto cv = app.view();
+    for (int y = 96; y < fk::panel_height; y += 4) {
+        for (int x = 0; x < fk::panel_width; x += 4) {
+            const auto* k = app.renderer.hit_key(cv, x, y);
+            if (k && k->action == "paste") {
+                paste_pos = {static_cast<double>(x), static_cast<double>(y)};
+                break;
+            }
+        }
+        if (paste_pos.first >= 0) {
+            break;
+        }
+    }
+    require(paste_pos.first >= 0, "found paste key on panel");
+    const auto [px, py] = paste_pos;
+    sink.events.clear();
+    app.down(0, px, py, 1.0);
+    app.up(0, px, py);
+    bool saw_ctrl = false, saw_v = false;
+    for (const auto& [code, val] : sink.events) {
+        if (code == KEY_LEFTCTRL && val == 1) {
+            saw_ctrl = true;
+        }
+        if (code == KEY_V && val == 1) {
+            saw_v = true;
+        }
+    }
+    require(saw_ctrl && saw_v, "quick tap on Paste emits Ctrl+V");
+    require(!app.view().clipboard, "quick tap on Paste does not open clipboard");
+
+    // Long press on Paste opens clipboard tray
+    sink.events.clear();
+    app.down(0, px, py, 2.0);
+    app.tick(2.4); // > 0.35s hold
+    require(app.view().clipboard, "holding Paste for >= 0.35s opens clipboard tray");
+    app.up(0, px, py);
+    require(sink.events.empty(), "releasing held Paste does not emit Ctrl+V");
+}
 } // namespace
 int main() {
     try {
@@ -345,8 +475,10 @@ int main() {
         profile_tests(defaults);
         app_tests();
         dictation_tests();
+        voice_command_and_punctuation_tests();
+        clipboard_tests();
         std::cout << "Key sequences, cancellation, repeat, profiles, persistence, language legends, "
-                     "dictation and rendering passed.\n";
+                     "dictation, voice commands, clipboard and rendering passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

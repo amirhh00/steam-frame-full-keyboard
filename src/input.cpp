@@ -414,16 +414,19 @@ bool KeyboardState::down(unsigned pointer, const Key& key, double now, bool loca
     // A modifier tap latches visually but emits nothing until used. This avoids
     // leaving Ctrl physically held while the user navigates another application.
     auto modifiers_used = modifiers();
-    if (key.action_kind == ActionKind::Shortcut) {
+    if (key.action_kind == ActionKind::Shortcut && key.action != "paste") {
         modifiers_used = {KEY_LEFTCTRL};
     }
     for (int modifier : modifiers_used) {
         press.codes.push_back(modifier);
     }
-    const int action_code = key.action_kind == ActionKind::Shortcut
-                                ? (native_code ? native_code : (key.action == "copy" ? KEY_C : KEY_V))
-                                : code;
-    press.codes.push_back(action_code);
+    if (key.action_kind != ActionKind::Shortcut || key.action != "paste") {
+        const int action_code =
+            key.action_kind == ActionKind::Shortcut
+                ? (native_code ? native_code : (key.action == "copy" ? KEY_C : KEY_V))
+                : code;
+        press.codes.push_back(action_code);
+    }
     if (local) {
         if (code == KEY_CAPSLOCK || code == KEY_NUMLOCK) {
             const bool already_held =
