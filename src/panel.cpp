@@ -13,7 +13,7 @@ struct Placement {
 };
 Placement placement(const PanelView& view) {
     const double margin = view.theme->padding;
-    const double toolbar_height = (view.composing || view.clipboard) ? 208 : normal_toolbar_height;
+    const double toolbar_height = view.composing ? 208 : normal_toolbar_height;
     const double scale =
         std::min((panel_width - 2 * margin) / view.layout->width,
                  (panel_height - toolbar_height - 2 * margin - view.theme->depth) / view.layout->height);
@@ -186,6 +186,17 @@ void draw_icon(cairo_t* cr, Icon icon, Rect bounds, Color color, double size = 2
         cairo_arc(cr, 0, -1, 6.5, 0.15 * pi, 0.85 * pi);
         line(0, 5.5, 0, 9);
         line(-4.5, 9, 4.5, 9);
+        break;
+    case Icon::Capture:
+        rounded(cr, {-7.5, -5.5, 10.5, 11}, 2.5);
+        cairo_stroke(cr);
+        cairo_move_to(cr, 3, -2.5);
+        cairo_line_to(cr, 8.5, -5.5);
+        cairo_line_to(cr, 8.5, 5.5);
+        cairo_line_to(cr, 3, 2.5);
+        cairo_close_path(cr);
+        cairo_stroke(cr);
+        cairo_arc(cr, -2.2, 0, 2.2, 0, 2 * pi);
         break;
     case Icon::None:
         break;
@@ -430,7 +441,23 @@ void PanelRenderer::paint(const PanelView& view, double now, bool force_full) {
               view.language->font, t.legend);
     }
     if (view.clipboard && !view.settings) {
-        label(cr, "Clipboard History (tap an item to paste, or Close)", {20, 94, 1560, 40}, 22,
+        // Dim the keyboard underneath:
+        cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.65);
+        rounded(cr, {0, 0, panel_width, panel_height}, t.surface_radius);
+        cairo_fill(cr);
+
+        // Modal dialog box:
+        const Rect modal_box{220, 75, 1160, 480};
+        rounded(cr, modal_box, t.surface_radius);
+        source(cr, t.surface);
+        cairo_fill_preserve(cr);
+        cairo_set_line_width(cr, 2.0);
+        cairo_set_source_rgba(cr, t.bottom.r, t.bottom.g, t.bottom.b, 0.8);
+        cairo_stroke(cr);
+
+        // Modal header:
+        label(cr, "Clipboard History", {260, 95, 1080, 36}, 26, view.language->font, t.legend);
+        label(cr, "Tap an item to paste it directly into your active window", {260, 134, 1080, 24}, 16,
               view.language->font, t.legend);
     }
     for (const auto& control : view.controls) {

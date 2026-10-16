@@ -5,6 +5,7 @@
 #include <iostream>
 #include <linux/input-event-codes.h>
 #include <stdexcept>
+#include <thread>
 #include <unistd.h>
 
 namespace fk = framekeyboard;
@@ -228,6 +229,21 @@ void profile_tests(const fk::Profiles& defaults) {
     auto saved = fk::load_settings(directory.path, errors);
     require(saved.active.language == "de-de" && saved.favorites.size() == 1 && errors.empty(),
             "settings preserve selection and favorites");
+    require(saved.active.voice_enabled && saved.active.clipboard_enabled && saved.active.hand_enabled &&
+                saved.active.hand_distance_cm == 12 && saved.active.hand_pitch_deg == 25 &&
+                saved.active.speech_model == "ggml-small.en.bin" && saved.active.touch_typing_enabled &&
+                saved.active.proximity_grab_enabled && saved.active.haptics_enabled &&
+                saved.active.horizon_lock_enabled,
+            "default feature options populated");
+    fk::save_selection(directory.path, {"en-us-full", "de-de", "midnight", false, "ggml-tiny.en.bin",
+                                        false, false, 15, 30, false, false, false, false});
+    saved = fk::load_settings(directory.path, errors);
+    require(!saved.active.voice_enabled && saved.active.speech_model == "ggml-tiny.en.bin" &&
+                !saved.active.clipboard_enabled && !saved.active.hand_enabled &&
+                saved.active.hand_distance_cm == 15 && saved.active.hand_pitch_deg == 30 &&
+                !saved.active.touch_typing_enabled && !saved.active.proximity_grab_enabled &&
+                !saved.active.haptics_enabled && !saved.active.horizon_lock_enabled,
+            "custom feature options saved and reloaded");
     std::ifstream file(directory.path / "config.json");
     const std::string content((std::istreambuf_iterator<char>(file)), {});
     require(content.find("custom") != std::string::npos, "preserve unrelated settings");
@@ -302,6 +318,88 @@ void app_tests() {
     click_control("preset-ja-romaji"); // Romaji uses the US layout.
     require(has_japanese_presets(), "Japanese language shows presets with a US layout");
     require(sink.events.empty(), "preview settings do not emit input");
+
+    // Test Features Tab:
+    click_control("settings-tab-features");
+    click_control("voice-next");         // Toggles voice_enabled off
+    click_control("clipboard-opt-next"); // Toggles clipboard_enabled off
+    click_control("haptics-opt-next");   // Toggles haptics_enabled off
+
+    // Test VR & Hands Tab:
+    click_control("settings-tab-hands");
+    click_control("hand-opt-next");       // Toggles hand_enabled off
+    click_control("hand-distance-next");  // Cycles hand distance from 12 to 15
+    click_control("hand-pitch-next");     // Cycles hand pitch from 25 to 30
+    click_control("touch-typing-next");   // Toggles touch_typing_enabled off
+    click_control("proximity-grab-next"); // Toggles proximity_grab_enabled off
+    click_control("horizon-lock-next");   // Toggles horizon_lock_enabled off
+    // Test Capture Tab:
+    click_control("settings-tab-capture");
+    click_control("capture-opt-next");      // Toggles capture_enabled off
+    click_control("capture-quality-next");  // Cycles to "1080p Standard"
+    click_control("capture-save-dir-next"); // Cycles to "~/Videos"
+    click_control("capture-audio-next");    // Toggles capture_audio off
+    click_control("apply");
+
+    require(!app.voice_enabled(), "voice disabled after apply");
+    require(!app.clipboard_enabled(), "clipboard disabled after apply");
+    require(!app.haptics_enabled(), "haptics disabled after apply");
+    require(!app.hand_enabled(), "hand disabled after apply");
+    require(std::abs(app.hand_distance_meters() - 0.15) < 0.001, "hand distance updated after apply");
+    require(app.hand_pitch_degrees() == 30, "hand pitch updated after apply");
+    require(!app.touch_typing_enabled(), "touch typing disabled after apply");
+    require(!app.proximity_grab_enabled(), "proximity grab disabled after apply");
+    require(!app.horizon_lock_enabled(), "horizon lock disabled after apply");
+    require(!app.capture_enabled(), "capture disabled after apply");
+    require(app.capture_quality() == "1080p Standard", "capture quality updated after apply");
+    require(app.capture_save_dir() == "~/Videos", "capture save dir updated after apply");
+    require(!app.capture_audio(), "capture audio disabled after apply");
+
+    // When voice is disabled, dictate button must not be present in main toolbar
+    bool has_dictate = false;
+    bool has_capture = false;
+    for (const auto& c : app.view().controls) {
+        if (c.id == "dictate") {
+            has_dictate = true;
+        }
+        if (c.id == "capture") {
+            has_capture = true;
+        }
+    }
+    require(!has_dictate, "dictate button hidden when voice typing is disabled");
+    require(!has_capture, "capture button hidden when camera capture is disabled");
+
+    // Open settings again, verify hands-defaults reset
+    app.show_settings();
+    click_control("settings-tab-hands");
+    click_control("hands-defaults");
+    click_control("apply");
+    require(app.hand_enabled() && std::abs(app.hand_distance_meters() - 0.12) < 0.001 &&
+                app.hand_pitch_degrees() == 25 && app.touch_typing_enabled() &&
+                app.proximity_grab_enabled() && app.horizon_lock_enabled(),
+            "VR & hand defaults restored");
+
+    // Open settings again, verify features-defaults reset
+    app.show_settings();
+    click_control("settings-tab-features");
+    click_control("features-defaults");
+    click_control("apply");
+    require(app.voice_enabled() && app.clipboard_enabled() && app.haptics_enabled() &&
+                app.capture_enabled() && app.capture_quality() == "1080p High" &&
+                app.capture_save_dir() == "~/Videos/Recordings" && app.capture_audio(),
+            "feature defaults restored");
+
+    // Capture button should now be present in main toolbar
+    has_capture = false;
+    for (const auto& c : app.view().controls) {
+        if (c.id == "capture") {
+            has_capture = true;
+            require(c.icon == fk::Icon::Capture, "capture button has Capture icon");
+            break;
+        }
+    }
+    require(has_capture, "capture button restored in toolbar");
+
     rejects([&] { app.apply({"missing", "en-us", "graphite"}); }, "invalid selection rejected");
     require(app.selection().theme == "midnight", "failed apply retains prior selection");
 }
@@ -464,6 +562,43 @@ void clipboard_tests() {
     require(app.view().clipboard, "holding Paste for >= 0.35s opens clipboard tray");
     app.up(0, px, py);
     require(sink.events.empty(), "releasing held Paste does not emit Ctrl+V");
+
+    // Test that clipboard history persists across App instances
+    fk::App app2(options, sink);
+    app2.open_clipboard();
+    require(app2.view().clipboard, "clipboard tray opens in second app instance");
+    bool app2_has_clip0 = false;
+    for (const auto& c : app2.view().controls) {
+        if (c.id == "clip-0") {
+            app2_has_clip0 = true;
+            break;
+        }
+    }
+    require(app2_has_clip0, "clipboard history reloaded from clipboard.json");
+}
+void capture_tests() {
+    require(fk::VideoCapture::ffmpeg_available(), "ffmpeg is available on system");
+    const std::string cam_dev = fk::VideoCapture::detect_camera_device();
+    require(!cam_dev.empty() && cam_dev.starts_with("/dev/video"), "camera device detected");
+
+    TemporaryDirectory temp;
+    const auto save_dir = temp.path / "Recordings";
+    fk::VideoCapture cap;
+    require(!cap.active(), "capture starts idle");
+
+    std::string err;
+    const bool started = cap.start(save_dir.string(), "1080p Standard", false, cam_dev, &err);
+    if (started) {
+        require(cap.active(), "capture is active after start");
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        require(cap.duration(fk::monotonic_seconds()) > 0.1, "capture duration tracking works");
+        std::string saved_file;
+        const bool stopped = cap.stop(&saved_file, &err);
+        require(stopped, "capture stopped cleanly");
+        require(!cap.active(), "capture is idle after stop");
+        require(!saved_file.empty() && fk::fs::exists(saved_file), "saved file exists on disk");
+        require(fk::fs::file_size(saved_file) > 0, "saved file has non-zero size");
+    }
 }
 } // namespace
 int main() {
@@ -477,8 +612,9 @@ int main() {
         dictation_tests();
         voice_command_and_punctuation_tests();
         clipboard_tests();
+        capture_tests();
         std::cout << "Key sequences, cancellation, repeat, profiles, persistence, language legends, "
-                     "dictation, voice commands, clipboard and rendering passed.\n";
+                     "dictation, voice commands, clipboard, capture and rendering passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

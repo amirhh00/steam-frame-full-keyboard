@@ -41,7 +41,7 @@ add_custom_command(OUTPUT "${PROFILE_HEADER}"
             "${CMAKE_CURRENT_SOURCE_DIR}" "${PROFILE_HEADER}"
     DEPENDS ${PROFILE_FILES} tools/embed_defaults.py tools/validate_layout.py
     VERBATIM)
-add_library(keyboard_core src/config.cpp src/input.cpp src/panel.cpp src/app.cpp src/instance.cpp src/placement.cpp src/placement_store.cpp src/grip.cpp src/ei_input.cpp src/japanese.cpp src/cjk.cpp src/text_input.cpp src/dictation.cpp "${IME_HEADER}" "${IME_CODE}" "${PROFILE_HEADER}")
+add_library(keyboard_core src/config.cpp src/input.cpp src/panel.cpp src/app.cpp src/instance.cpp src/placement.cpp src/placement_store.cpp src/grip.cpp src/ei_input.cpp src/japanese.cpp src/cjk.cpp src/text_input.cpp src/dictation.cpp src/capture.cpp "${IME_HEADER}" "${IME_CODE}" "${PROFILE_HEADER}")
 target_include_directories(keyboard_core PUBLIC include PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(keyboard_core PUBLIC PkgConfig::NATIVE PkgConfig::EI PkgConfig::X11 ${CMAKE_DL_LIBS})
 target_compile_options(keyboard_core PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
@@ -98,7 +98,7 @@ target_compile_definitions(framekeyboard PRIVATE FRAMEKEYBOARD_VERSION="${PROJEC
 # Development binaries find these beside themselves; packages use share/framekeyboard.
 # Do not embed an absolute source-tree path in the executable for this fallback.
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/vr")
-foreach(manifest actions.json frame-controller.json)
+foreach(manifest actions.json frame-controller.json hand_pointing_left.png hand_pointing_right.png)
     configure_file("vr/${manifest}" "vr/${manifest}" COPYONLY)
 endforeach()
 set_target_properties(framekeyboard PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE INSTALL_RPATH "${OPENVR_RUNTIME_PATH}")

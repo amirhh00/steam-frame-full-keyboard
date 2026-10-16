@@ -121,7 +121,53 @@ Color color(json_object* object, const char* name, const std::string& fallback =
             static_cast<double>((packed >> 8) & 255) / 255, static_cast<double>(packed & 255) / 255};
 }
 Selection selection(json_object* object) {
-    return {identifier(object, "layout"), identifier(object, "language"), identifier(object, "theme")};
+    Selection s;
+    s.layout = identifier(object, "layout");
+    s.language = identifier(object, "language");
+    s.theme = identifier(object, "theme");
+    if (auto* v = field(object, "voice_enabled", json_type_boolean, true)) {
+        s.voice_enabled = json_object_get_boolean(v);
+    }
+    s.speech_model = text(object, "speech_model", s.speech_model, true);
+    if (auto* c = field(object, "clipboard_enabled", json_type_boolean, true)) {
+        s.clipboard_enabled = json_object_get_boolean(c);
+    }
+    if (auto* h = field(object, "hand_enabled", json_type_boolean, true)) {
+        s.hand_enabled = json_object_get_boolean(h);
+    }
+    if (auto* d = field(object, "hand_distance_cm", json_type_int, true)) {
+        const int cm = json_object_get_int(d);
+        if (cm >= 3 && cm <= 50) {
+            s.hand_distance_cm = cm;
+        }
+    }
+    if (auto* p = field(object, "hand_pitch_deg", json_type_int, true)) {
+        const int deg = json_object_get_int(p);
+        if (deg >= -45 && deg <= 60) {
+            s.hand_pitch_deg = deg;
+        }
+    }
+    if (auto* t = field(object, "touch_typing_enabled", json_type_boolean, true)) {
+        s.touch_typing_enabled = json_object_get_boolean(t);
+    }
+    if (auto* g = field(object, "proximity_grab_enabled", json_type_boolean, true)) {
+        s.proximity_grab_enabled = json_object_get_boolean(g);
+    }
+    if (auto* hp = field(object, "haptics_enabled", json_type_boolean, true)) {
+        s.haptics_enabled = json_object_get_boolean(hp);
+    }
+    if (auto* hz = field(object, "horizon_lock_enabled", json_type_boolean, true)) {
+        s.horizon_lock_enabled = json_object_get_boolean(hz);
+    }
+    if (auto* c = field(object, "capture_enabled", json_type_boolean, true)) {
+        s.capture_enabled = json_object_get_boolean(c);
+    }
+    s.capture_quality = text(object, "capture_quality", s.capture_quality, true);
+    s.capture_save_dir = text(object, "capture_save_dir", s.capture_save_dir, true);
+    if (auto* ca = field(object, "capture_audio", json_type_boolean, true)) {
+        s.capture_audio = json_object_get_boolean(ca);
+    }
+    return s;
 }
 
 // Scan a directory as a transaction. Duplicate IDs never win by directory order.
@@ -471,6 +517,24 @@ void save_selection(const fs::path& user_dir, const Selection& s) {
     json_object_object_add(active, "layout", json_object_new_string(s.layout.c_str()));
     json_object_object_add(active, "language", json_object_new_string(s.language.c_str()));
     json_object_object_add(active, "theme", json_object_new_string(s.theme.c_str()));
+    json_object_object_add(active, "voice_enabled", json_object_new_boolean(s.voice_enabled));
+    json_object_object_add(active, "speech_model", json_object_new_string(s.speech_model.c_str()));
+    json_object_object_add(active, "clipboard_enabled", json_object_new_boolean(s.clipboard_enabled));
+    json_object_object_add(active, "hand_enabled", json_object_new_boolean(s.hand_enabled));
+    json_object_object_add(active, "hand_distance_cm", json_object_new_int(s.hand_distance_cm));
+    json_object_object_add(active, "hand_pitch_deg", json_object_new_int(s.hand_pitch_deg));
+    json_object_object_add(active, "touch_typing_enabled",
+                           json_object_new_boolean(s.touch_typing_enabled));
+    json_object_object_add(active, "proximity_grab_enabled",
+                           json_object_new_boolean(s.proximity_grab_enabled));
+    json_object_object_add(active, "haptics_enabled", json_object_new_boolean(s.haptics_enabled));
+    json_object_object_add(active, "horizon_lock_enabled",
+                           json_object_new_boolean(s.horizon_lock_enabled));
+    json_object_object_add(active, "capture_enabled", json_object_new_boolean(s.capture_enabled));
+    json_object_object_add(active, "capture_quality", json_object_new_string(s.capture_quality.c_str()));
+    json_object_object_add(active, "capture_save_dir",
+                           json_object_new_string(s.capture_save_dir.c_str()));
+    json_object_object_add(active, "capture_audio", json_object_new_boolean(s.capture_audio));
     json_object_object_add(document.get(), "active", active);
     const std::string data =
         std::string(json_object_to_json_string_ext(document.get(), JSON_C_TO_STRING_PRETTY)) + '\n';

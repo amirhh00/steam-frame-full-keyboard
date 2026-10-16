@@ -193,18 +193,24 @@ std::vector<Dictation::Event> Dictation::poll(double now) {
 fs::path find_speech_model(const fs::path& explicit_model, const fs::path& config_dir,
                            const fs::path& data_dir) {
     if (!explicit_model.empty()) {
-        return explicit_model;
+        std::error_code error;
+        if (fs::is_regular_file(explicit_model, error)) {
+            return explicit_model;
+        }
     }
+    const std::string model_name =
+        explicit_model.empty() ? default_model_name : explicit_model.filename().string();
     std::vector<fs::path> candidates;
     if (!config_dir.empty()) {
+        candidates.push_back(config_dir / "speech" / model_name);
         candidates.push_back(config_dir / "speech" / "model.bin");
     }
     if (!data_dir.empty()) {
-        candidates.push_back(data_dir / "speech" / default_model_name);
+        candidates.push_back(data_dir / "speech" / model_name);
     }
     if (const auto dir = executable_dir(); !dir.empty()) {
-        candidates.push_back(dir.parent_path() / "share/framekeyboard/speech" / default_model_name);
-        candidates.push_back(dir / "speech" / default_model_name);
+        candidates.push_back(dir.parent_path() / "share/framekeyboard/speech" / model_name);
+        candidates.push_back(dir / "speech" / model_name);
     }
     for (const auto& candidate : candidates) {
         std::error_code error;
@@ -213,7 +219,7 @@ fs::path find_speech_model(const fs::path& explicit_model, const fs::path& confi
         }
     }
     // Report the packaged location when nothing is installed.
-    return data_dir.empty() ? fs::path(default_model_name) : data_dir / "speech" / default_model_name;
+    return data_dir.empty() ? fs::path(model_name) : data_dir / "speech" / model_name;
 }
 fs::path find_speech_helper() {
     const auto dir = executable_dir();

@@ -4,12 +4,15 @@
 #include <X11/Xlib.h>
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <glib.h>
+#include <json-c/json.h>
 #include <linux/input-event-codes.h>
 #include <optional>
 #include <stdexcept>
 #include <thread>
 #include <tuple>
+#include <vector>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 namespace framekeyboard {
@@ -19,47 +22,77 @@ double monotonic_seconds() {
 }
 namespace {
 std::string read_system_clipboard() {
-    Display* display = XOpenDisplay(nullptr);
-    if (!display) {
-        return {};
+    const char* env_disp = std::getenv("DISPLAY");
+    std::vector<std::string> displays_to_try;
+    if (env_disp && *env_disp) {
+        displays_to_try.push_back(env_disp);
     }
-    Atom clipboard = XInternAtom(display, "CLIPBOARD", False);
-    Atom utf8 = XInternAtom(display, "UTF8_STRING", False);
-    Atom target_prop = XInternAtom(display, "FRAMEKEYBOARD_CLIP", False);
-    Window window = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 1, 1, 0, 0, 0);
+    if (std::find(displays_to_try.begin(), displays_to_try.end(), ":0") == displays_to_try.end()) {
+        displays_to_try.push_back(":0");
+    }
+    if (std::find(displays_to_try.begin(), displays_to_try.end(), ":1") == displays_to_try.end()) {
+        displays_to_try.push_back(":1");
+    }
 
-    XConvertSelection(display, clipboard, utf8, target_prop, window, CurrentTime);
-    XFlush(display);
+    for (const auto& disp_name : displays_to_try) {
+        Display* display = XOpenDisplay(disp_name.c_str());
+        if (!display) {
+            continue;
+        }
+        const Atom targets[2] = {XInternAtom(display, "CLIPBOARD", False), XA_PRIMARY};
+        const Atom types[2] = {XInternAtom(display, "UTF8_STRING", False), XA_STRING};
+        Atom target_prop = XInternAtom(display, "FRAMEKEYBOARD_CLIP", False);
+        Window window = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 1, 1, 0, 0, 0);
 
-    std::string result;
-    XEvent event;
-    for (int i = 0; i < 20; ++i) {
-        if (XCheckTypedWindowEvent(display, window, SelectionNotify, &event)) {
-            if (event.xselection.property != None) {
-                Atom actual_type;
-                int actual_format;
-                unsigned long nitems = 0, bytes_after = 0;
-                unsigned char* prop = nullptr;
-                if (XGetWindowProperty(display, window, target_prop, 0, 65536, True, AnyPropertyType,
-                                       &actual_type, &actual_format, &nitems, &bytes_after,
-                                       &prop) == Success) {
-                    if (prop && nitems > 0) {
-                        result.assign(reinterpret_cast<const char*>(prop), nitems);
-                        XFree(prop);
+        std::string result;
+        for (Atom sel : targets) {
+            for (Atom type : types) {
+                XConvertSelection(display, sel, type, target_prop, window, CurrentTime);
+                XFlush(display);
+
+                for (int i = 0; i < 15; ++i) {
+                    XEvent event;
+                    if (XCheckTypedWindowEvent(display, window, SelectionNotify, &event)) {
+                        if (event.xselection.property != None) {
+                            Atom actual_type;
+                            int actual_format;
+                            unsigned long nitems = 0, bytes_after = 0;
+                            unsigned char* prop = nullptr;
+                            if (XGetWindowProperty(display, window, target_prop, 0, 65536, True,
+                                                   AnyPropertyType, &actual_type, &actual_format,
+                                                   &nitems, &bytes_after, &prop) == Success) {
+                                if (prop && nitems > 0) {
+                                    result.assign(reinterpret_cast<const char*>(prop), nitems);
+                                    XFree(prop);
+                                }
+                            }
+                        }
+                        break;
                     }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                if (!result.empty()) {
+                    break;
                 }
             }
-            break;
+            if (!result.empty()) {
+                break;
+            }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        XDestroyWindow(display, window);
+        XCloseDisplay(display);
+
+        if (!result.empty() &&
+            g_utf8_validate(result.c_str(), static_cast<gssize>(result.size()), nullptr)) {
+            auto start = result.find_first_not_of(" \t\r\n");
+            auto end = result.find_last_not_of(" \t\r\n");
+            if (start != std::string::npos && end != std::string::npos) {
+                return result.substr(start, end - start + 1);
+            }
+            return result;
+        }
     }
-    XDestroyWindow(display, window);
-    XCloseDisplay(display);
-    if (!result.empty() &&
-        !g_utf8_validate(result.c_str(), static_cast<gssize>(result.size()), nullptr)) {
-        return {};
-    }
-    return result;
+    return {};
 }
 #ifdef None
 #undef None
@@ -270,8 +303,12 @@ App::App(const Options& options, KeySink& sink)
         target_language_ = target->second;
     }
     auto helper = find_speech_helper();
-    auto model = find_speech_model(options_.speech_model, options_.config_dir, options_.data_dir);
+    auto model = find_speech_model(
+        options_.speech_model.empty() ? fs::path(settings_.active.speech_model) : options_.speech_model,
+        options_.config_dir, options_.data_dir);
     dictation_ = std::make_unique<Dictation>(std::move(helper), std::move(model));
+    capture_ = std::make_unique<VideoCapture>();
+    load_clipboard_history();
     // A saved language mismatch must leave Settings reachable, not abort launch.
     refresh_typing();
 }
@@ -287,8 +324,15 @@ std::vector<Control> App::controls() const {
         {"size-larger", "Larger keyboard", {228, 12, 60, 42}, false, Icon::ScaleUp},
         {"close", "Close", {1522, 12, 60, 42}, false, Icon::Close}};
     if (!settings_open_) {
-        const bool dictating = dictation_ && dictation_->active();
-        result.push_back({"dictate", "Dictate", {298, 12, 60, 42}, dictating, Icon::Dictate});
+        if (voice_enabled()) {
+            const bool dictating = dictation_ && dictation_->active();
+            result.push_back({"dictate", "Dictate", {298, 12, 60, 42}, dictating, Icon::Dictate});
+        }
+        if (capture_enabled()) {
+            const bool capturing = capture_ && capture_->active();
+            const double cap_x = voice_enabled() ? 368.0 : 298.0;
+            result.push_back({"capture", "Capture", {cap_x, 12, 60, 42}, capturing, Icon::Capture});
+        }
         if (japanese()) {
             result.push_back({"ime-toggle", japanese_latin_ ? "A / あ" : "あ / A", {610, 12, 115, 42}});
             if (!japanese_latin_) {
@@ -344,67 +388,171 @@ std::vector<Control> App::controls() const {
             }
         }
         if (clipboard_open_) {
-            result.push_back({"clip-title", "Clipboard History", {20, 148, 160, 42}});
             if (clipboard_history_.empty()) {
-                result.push_back({"clip-empty", "(No text copied yet)", {190, 148, 380, 42}});
+                result.push_back({"clip-empty",
+                                  "(No text copied yet · Press Copy or select text)",
+                                  {260, 240, 1080, 60}});
             } else {
-                const int count = std::min(4, static_cast<int>(clipboard_history_.size()));
+                const int count = std::min(5, static_cast<int>(clipboard_history_.size()));
                 for (int i = 0; i < count; ++i) {
                     std::string label = clipboard_history_[i];
                     std::replace(label.begin(), label.end(), '\n', ' ');
-                    if (label.size() > 18) {
-                        label = label.substr(0, 17) + "...";
+                    if (label.size() > 65) {
+                        label = label.substr(0, 62) + "...";
                     }
                     result.push_back({"clip-" + std::to_string(i),
-                                      std::to_string(i + 1) + ": " + label,
-                                      {190.0 + i * 270, 148, 260, 42}});
+                                      "[" + std::to_string(i + 1) + "]  " + label,
+                                      {260, 175.0 + i * 55.0, 1080, 48}});
                 }
-                result.push_back({"clip-clear", "Clear", {1370, 148, 100, 42}});
+                result.push_back({"clip-clear", "Clear History", {260, 470, 260, 52}});
             }
-            result.push_back({"clip-close", "Close", {1480, 148, 100, 42}});
+            result.push_back({"clip-close", "Close", {1080, 470, 260, 52}});
         }
         return result;
     }
-    const auto& language = profiles_.languages.at(pending_.language);
-    const auto& layout = profiles_.layouts.at(pending_.layout);
-    const bool japanese_layout = std::any_of(layout.keys.begin(), layout.keys.end(), [](const Key& key) {
-        return key.action_kind == ActionKind::Key && key.action == "KanaMode";
-    });
-    // Use the pending selection so the options follow changes before Apply.
-    if (japanese_layout || language.locale == "ja" || language.locale.starts_with("ja-") ||
-        language.locale.starts_with("ja_") || language.keymap == "jp" ||
-        language.input_method.starts_with("japanese-")) {
-        result.push_back({"preset-ja-romaji", "日本語 Romaji", {610, 12, 230, 42}});
-        result.push_back({"preset-ja-kana", "日本語 Kana", {850, 12, 230, 42}});
-        result.push_back({"preset-ja-jis", "JIS (system IME)", {1090, 12, 250, 42}});
-    }
-    auto row = [&](const std::string& kind, const std::string& name, double y) {
-        result.push_back({kind + "-prev", "<", {40, y, 65, 64}});
-        result.push_back({kind + "-label", name, {115, y, 1370, 64}});
-        result.push_back({kind + "-next", ">", {1495, y, 65, 64}});
-    };
-    auto source = [&](const std::string& kind, const std::string& id) {
-        const auto found = profiles_.sources.find(kind + "/" + id);
-        return found == profiles_.sources.end()
-                   ? " [built-in]"
-                   : " [" + fs::path(found->second).filename().string() + "]";
-    };
-    row("layout",
-        "Layout: " + profiles_.layouts.at(pending_.layout).name + source("layouts", pending_.layout),
-        96);
-    row("language",
-        "Language: " + profiles_.languages.at(pending_.language).name +
-            source("languages", pending_.language),
-        182);
-    row("theme", "Theme: " + profiles_.themes.at(pending_.theme).name + source("themes", pending_.theme),
-        268);
-    if (!settings_.favorites.empty()) {
-        row("favorite", "Favorite: " + settings_.favorites.at(favorite_index_).name, 354);
-    }
-    result.push_back({"apply", "Apply and save", {350, 446, 280, 60}});
-    result.push_back({"reload", "Reload profiles", {650, 446, 280, 60}});
-    if (!settings_.favorites.empty()) {
-        result.push_back({"favorite-use", "Use favorite", {950, 446, 280, 60}});
+
+    result.push_back({"settings-tab-profiles", "Profiles", {300, 12, 130, 42}, settings_tab_ == 0});
+    result.push_back({"settings-tab-hands", "VR & Hands", {440, 12, 150, 42}, settings_tab_ == 1});
+    result.push_back({"settings-tab-features", "Features", {600, 12, 130, 42}, settings_tab_ == 2});
+    result.push_back({"settings-tab-capture", "Capture", {740, 12, 130, 42}, settings_tab_ == 3});
+
+    if (settings_tab_ == 0) {
+        const auto& language = profiles_.languages.at(pending_.language);
+        const auto& layout = profiles_.layouts.at(pending_.layout);
+        const bool japanese_layout =
+            std::any_of(layout.keys.begin(), layout.keys.end(), [](const Key& key) {
+                return key.action_kind == ActionKind::Key && key.action == "KanaMode";
+            });
+        // Use the pending selection so the options follow changes before Apply.
+        if (japanese_layout || language.locale == "ja" || language.locale.starts_with("ja-") ||
+            language.locale.starts_with("ja_") || language.keymap == "jp" ||
+            language.input_method.starts_with("japanese-")) {
+            result.push_back({"preset-ja-romaji", "日本語 Romaji", {880, 12, 190, 42}});
+            result.push_back({"preset-ja-kana", "日本語 Kana", {1080, 12, 190, 42}});
+            result.push_back({"preset-ja-jis", "JIS (system IME)", {1280, 12, 225, 42}});
+        }
+        auto row = [&](const std::string& kind, const std::string& name, double y) {
+            result.push_back({kind + "-prev", "<", {40, y, 65, 64}});
+            result.push_back({kind + "-label", name, {115, y, 1370, 64}});
+            result.push_back({kind + "-next", ">", {1495, y, 65, 64}});
+        };
+        auto source = [&](const std::string& kind, const std::string& id) {
+            const auto found = profiles_.sources.find(kind + "/" + id);
+            return found == profiles_.sources.end()
+                       ? " [built-in]"
+                       : " [" + fs::path(found->second).filename().string() + "]";
+        };
+        row("layout",
+            "Layout: " + profiles_.layouts.at(pending_.layout).name + source("layouts", pending_.layout),
+            96);
+        row("language",
+            "Language: " + profiles_.languages.at(pending_.language).name +
+                source("languages", pending_.language),
+            182);
+        row("theme",
+            "Theme: " + profiles_.themes.at(pending_.theme).name + source("themes", pending_.theme),
+            268);
+        if (!settings_.favorites.empty()) {
+            row("favorite", "Favorite: " + settings_.favorites.at(favorite_index_).name, 354);
+        }
+        result.push_back({"apply", "Apply and save", {350, 446, 280, 60}});
+        result.push_back({"reload", "Reload profiles", {650, 446, 280, 60}});
+        if (!settings_.favorites.empty()) {
+            result.push_back({"favorite-use", "Use favorite", {950, 446, 280, 60}});
+        }
+    } else if (settings_tab_ == 1) {
+        auto row = [&](const std::string& kind, const std::string& name, double y) {
+            result.push_back({kind + "-prev", "<", {40, y, 65, 46}});
+            result.push_back({kind + "-label", name, {115, y, 1370, 46}});
+            result.push_back({kind + "-next", ">", {1495, y, 65, 46}});
+        };
+        row("hand-opt",
+            "Virtual hand pointer: " + std::string(pending_.hand_enabled ? "Enabled" : "Disabled"), 68);
+
+        row("hand-distance",
+            "Hand appearance distance: " + std::to_string(pending_.hand_distance_cm) + " cm" +
+                (pending_.hand_distance_cm == 12 ? " (recommended)" : ""),
+            122);
+
+        row("hand-pitch",
+            "Hand rotation angle: " + std::to_string(pending_.hand_pitch_deg) + "°" +
+                (pending_.hand_pitch_deg == 25 ? " (recommended)" : ""),
+            176);
+
+        row("touch-typing",
+            "Direct touch typing: " +
+                std::string(pending_.touch_typing_enabled ? "Enabled" : "Disabled"),
+            230);
+
+        row("proximity-grab",
+            "Grab without laser: " +
+                std::string(pending_.proximity_grab_enabled ? "Enabled" : "Disabled"),
+            284);
+
+        row("horizon-lock",
+            "Horizon auto-leveling: " +
+                std::string(pending_.horizon_lock_enabled ? "Enabled" : "Disabled"),
+            338);
+
+        result.push_back({"apply", "Apply and save", {350, 415, 280, 54}});
+        result.push_back({"hands-defaults", "Reset VR defaults", {650, 415, 280, 54}});
+    } else if (settings_tab_ == 2) {
+        auto row = [&](const std::string& kind, const std::string& name, double y) {
+            result.push_back({kind + "-prev", "<", {40, y, 65, 52}});
+            result.push_back({kind + "-label", name, {115, y, 1370, 52}});
+            result.push_back({kind + "-next", ">", {1495, y, 65, 52}});
+        };
+        row("voice", "Voice typing: " + std::string(pending_.voice_enabled ? "Enabled" : "Disabled"),
+            80);
+
+        std::string model_status = " [not found]";
+        auto resolved_model =
+            find_speech_model(pending_.speech_model, options_.config_dir, options_.data_dir);
+        std::error_code ec;
+        if (fs::is_regular_file(resolved_model, ec)) {
+            model_status = " [installed]";
+        }
+        row("speech-model", "Speech model: " + pending_.speech_model + model_status, 150);
+
+        row("clipboard-opt",
+            "Clipboard history (hold paste): " +
+                std::string(pending_.clipboard_enabled ? "Enabled" : "Disabled"),
+            220);
+
+        row("haptics-opt",
+            "Controller vibration haptics: " +
+                std::string(pending_.haptics_enabled ? "Enabled" : "Disabled"),
+            290);
+
+        result.push_back({"apply", "Apply and save", {350, 400, 280, 56}});
+        result.push_back({"features-defaults", "Reset to defaults", {650, 400, 280, 56}});
+    } else {
+        auto row = [&](const std::string& kind, const std::string& name, double y) {
+            result.push_back({kind + "-prev", "<", {40, y, 65, 48}});
+            result.push_back({kind + "-label", name, {115, y, 1370, 48}});
+            result.push_back({kind + "-next", ">", {1495, y, 65, 48}});
+        };
+        row("capture-opt",
+            "Camera recording button: " + std::string(pending_.capture_enabled ? "Enabled" : "Disabled"),
+            72);
+
+        row("capture-quality",
+            "Video quality: " + pending_.capture_quality +
+                (pending_.capture_quality == "1080p High" ? " (recommended)" : ""),
+            132);
+
+        row("capture-save-dir", "Save recordings to: " + pending_.capture_save_dir, 192);
+
+        row("capture-audio",
+            "Capture microphone: " +
+                std::string(pending_.capture_audio ? "Enabled (captures mic)" : "Disabled (video only)"),
+            252);
+
+        const std::string dev_name = VideoCapture::detect_camera_device();
+        row("capture-device", "Camera source device: " + dev_name + " (SteamVR view)", 312);
+
+        result.push_back({"apply", "Apply and save", {350, 400, 280, 56}});
+        result.push_back({"capture-defaults", "Reset to defaults", {650, 400, 280, 56}});
     }
     return result;
 }
@@ -482,7 +630,7 @@ bool App::move(unsigned pointer, double x, double y) {
             id = control.id;
         }
     }
-    if (id.empty()) {
+    if (id.empty() && !v.settings && !v.clipboard) {
         if (const auto* key = renderer.hit_key(v, x, y)) {
             id = key->id;
             keyboard_key = true;
@@ -505,8 +653,18 @@ bool App::down(unsigned pointer, double x, double y, double now) {
     for (const auto& control : v.controls) {
         if (control.bounds.contains(x, y)) {
             pressed_controls_[pointer] = control.id;
+            if (control.id == "capture") {
+                capture_down_time_[pointer] = now;
+            }
             return false;
         }
+    }
+    if (clipboard_open_) {
+        // Tapping outside modal controls dismisses the clipboard modal
+        clipboard_open_ = false;
+        status_.clear();
+        dirty = true;
+        return false;
     }
     if (const auto* key = renderer.hit_key(v, x, y)) {
         const auto modifiers = keyboard_.modifiers();
@@ -548,7 +706,7 @@ bool App::down(unsigned pointer, double x, double y, double now) {
         const bool accepted =
             keyboard_.down(pointer, *key, now, local, local ? 0 : native_code(*key, modifiers));
         if (accepted) {
-            if (key->action == "paste") {
+            if (key->action == "paste" && clipboard_enabled()) {
                 paste_down_time_[pointer] = now;
             }
             try {
@@ -603,6 +761,13 @@ bool App::up(unsigned pointer, double x, double y) {
             gate_.send(KEY_LEFTCTRL, 0);
         }
     }
+    if (capture_long_pressed_.erase(pointer)) {
+        capture_down_time_.erase(pointer);
+        pressed_controls_.erase(pointer);
+        dirty = true;
+        return true;
+    }
+    capture_down_time_.erase(pointer);
     const bool key_released = keyboard_.up(pointer);
     move(pointer, x, y);
     const auto it = pressed_controls_.find(pointer);
@@ -625,6 +790,8 @@ void App::cancel_pointer(unsigned pointer) {
     text_repeats_.erase(pointer);
     paste_down_time_.erase(pointer);
     paste_long_pressed_.erase(pointer);
+    capture_down_time_.erase(pointer);
+    capture_long_pressed_.erase(pointer);
     keyboard_.cancel_pointer(pointer);
     pressed_controls_.erase(pointer);
     hovered_.erase(pointer);
@@ -634,6 +801,12 @@ void App::cancel(bool discard_composition) {
     text_repeats_.clear();
     paste_down_time_.clear();
     paste_long_pressed_.clear();
+    capture_down_time_.clear();
+    capture_long_pressed_.clear();
+    if (capture_ && capture_->active()) {
+        std::string saved;
+        capture_->stop(&saved);
+    }
     clipboard_open_ = false;
     if (dictation_) {
         dictation_->cancel();
@@ -678,6 +851,7 @@ bool App::tick(double now) {
                 } else if (!vr.text.empty()) {
                     status_ = "Recognized: " + vr.text;
                     type_dictation(vr.text + " ");
+                    push_clipboard(vr.text);
                 } else {
                     status_ = "No speech detected";
                 }
@@ -689,6 +863,43 @@ bool App::tick(double now) {
                 dirty = true;
                 break;
             }
+        }
+    }
+    if (capture_ && capture_->active()) {
+        capture_->poll(now);
+        if (!capture_->active()) {
+            status_ = capture_->last_error().empty() ? "Recording stopped"
+                                                     : ("Capture error: " + capture_->last_error());
+            dirty = true;
+        } else if (now - last_capture_tick_ >= 1.0) {
+            last_capture_tick_ = now;
+            const int secs = static_cast<int>(capture_->duration(now));
+            const int mins = secs / 60;
+            const int rem_secs = secs % 60;
+            char dur_buf[32];
+            std::snprintf(dur_buf, sizeof(dur_buf), "[%02d:%02d]", mins, rem_secs);
+            status_ = "Recording camera " + std::string(dur_buf) + " · Tap camera icon to stop";
+            dirty = true;
+        }
+    }
+    for (auto it = capture_down_time_.begin(); it != capture_down_time_.end();) {
+        if (now - it->second >= 0.45) {
+            capture_long_pressed_.insert(it->first);
+            it = capture_down_time_.erase(it);
+            show_settings();
+            settings_tab_ = 3;
+            status_ = "Camera capture settings";
+            dirty = true;
+            continue;
+        }
+        ++it;
+    }
+    if (copy_poll_pending_ && now >= copy_poll_time_) {
+        copy_poll_pending_ = false;
+        std::string text = read_system_clipboard();
+        if (!text.empty()) {
+            push_clipboard(text);
+            dirty = true;
         }
     }
     for (auto it = paste_down_time_.begin(); it != paste_down_time_.end();) {
@@ -747,6 +958,7 @@ void App::report_status(const std::string& message) {
 void App::show_settings() {
     cancel();
     settings_open_ = true;
+    settings_tab_ = 0;
     pending_ = settings_.active;
     dirty = true;
 }
@@ -771,9 +983,21 @@ void App::apply(Selection selection) {
     japanese_latin_ = false;
     cjk_latin_ = false;
     cjk_ = std::move(cjk);
+    const bool model_changed = (selection.speech_model != settings_.active.speech_model);
     settings_.active = std::move(selection);
     keymap_ = std::move(keymap);
     pending_ = settings_.active;
+    if (model_changed || !dictation_) {
+        if (dictation_) {
+            dictation_->cancel();
+        }
+        auto helper = find_speech_helper();
+        auto model =
+            find_speech_model(options_.speech_model.empty() ? fs::path(settings_.active.speech_model)
+                                                            : options_.speech_model,
+                              options_.config_dir, options_.data_dir);
+        dictation_ = std::make_unique<Dictation>(std::move(helper), std::move(model));
+    }
     refresh_typing();
     status_.clear();
     try {
@@ -1066,7 +1290,69 @@ void App::execute_voice_command(VoiceCommand command) {
         break;
     }
 }
+void App::load_clipboard_history() {
+    clipboard_history_.clear();
+    const auto file_path = options_.config_dir / "clipboard.json";
+    std::error_code ec;
+    if (!fs::is_regular_file(file_path, ec)) {
+        return;
+    }
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        return;
+    }
+    std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    if (text.empty()) {
+        return;
+    }
+    json_tokener* tok = json_tokener_new();
+    if (!tok) {
+        return;
+    }
+    json_object* obj = json_tokener_parse_ex(tok, text.c_str(), static_cast<int>(text.size()));
+    json_tokener_free(tok);
+    if (!obj || !json_object_is_type(obj, json_type_array)) {
+        if (obj) {
+            json_object_put(obj);
+        }
+        return;
+    }
+    const std::size_t len = json_object_array_length(obj);
+    for (std::size_t i = 0; i < len && clipboard_history_.size() < 5; ++i) {
+        json_object* item = json_object_array_get_idx(obj, i);
+        if (item && json_object_is_type(item, json_type_string)) {
+            const char* s = json_object_get_string(item);
+            if (s && *s) {
+                clipboard_history_.emplace_back(s);
+            }
+        }
+    }
+    json_object_put(obj);
+}
+void App::save_clipboard_history() {
+    try {
+        fs::create_directories(options_.config_dir);
+    } catch (...) {
+        return;
+    }
+    json_object* arr = json_object_new_array();
+    for (const auto& item : clipboard_history_) {
+        json_object_array_add(arr, json_object_new_string(item.c_str()));
+    }
+    const char* str = json_object_to_json_string_ext(arr, JSON_C_TO_STRING_PRETTY);
+    if (str) {
+        const auto file_path = options_.config_dir / "clipboard.json";
+        std::ofstream file(file_path);
+        if (file.is_open()) {
+            file << str << '\n';
+        }
+    }
+    json_object_put(arr);
+}
 void App::open_clipboard() {
+    if (!clipboard_enabled()) {
+        return;
+    }
     std::string text = read_system_clipboard();
     if (!text.empty()) {
         push_clipboard(text);
@@ -1086,12 +1372,17 @@ void App::push_clipboard(const std::string& text) {
     if (clipboard_history_.size() > 5) {
         clipboard_history_.resize(5);
     }
+    save_clipboard_history();
 }
 int App::native_code(const Key& key, const std::set<int>& mods) {
     if (!unicode_mode()) {
         return 0;
     }
     if (key.action_kind == ActionKind::Shortcut) {
+        if (key.action == "copy") {
+            copy_poll_pending_ = true;
+            copy_poll_time_ = monotonic_seconds() + 0.15;
+        }
         return gate_.shortcut_code(key.action == "copy" ? XKB_KEY_c : XKB_KEY_v,
                                    key_code(key.action == "copy" ? "KeyC" : "KeyV"));
     }
@@ -1236,6 +1527,7 @@ void App::action(const std::string& id) {
     }
     if (id == "clip-clear") {
         clipboard_history_.clear();
+        save_clipboard_history();
         status_ = "Clipboard history cleared";
         dirty = true;
         return;
@@ -1252,6 +1544,9 @@ void App::action(const std::string& id) {
         return;
     }
     if (id == "dictate") {
+        if (!voice_enabled()) {
+            return;
+        }
         if (!dictation_) {
             status_ = "Speech helper not available";
             dirty = true;
@@ -1272,6 +1567,36 @@ void App::action(const std::string& id) {
                 status_ = error.what();
                 dirty = true;
             }
+        }
+        return;
+    }
+    if (id == "capture") {
+        if (!capture_enabled()) {
+            return;
+        }
+        if (!capture_) {
+            status_ = "Capture system not available";
+            dirty = true;
+            return;
+        }
+        if (capture_->active()) {
+            std::string saved_path, err;
+            if (capture_->stop(&saved_path, &err)) {
+                status_ = "Recording saved: " + fs::path(saved_path).filename().string();
+            } else {
+                status_ = "Capture error: " + err;
+            }
+            dirty = true;
+        } else {
+            std::string err;
+            if (capture_->start(settings_.active.capture_save_dir, settings_.active.capture_quality,
+                                settings_.active.capture_audio, "", &err)) {
+                last_capture_tick_ = monotonic_seconds();
+                status_ = "Recording camera [00:00] · Tap camera icon to stop";
+            } else {
+                status_ = "Capture failed: " + err;
+            }
+            dirty = true;
         }
         return;
     }
@@ -1332,6 +1657,142 @@ void App::action(const std::string& id) {
         } else {
             show_settings();
         }
+    } else if (id == "settings-tab-profiles") {
+        settings_tab_ = 0;
+        dirty = true;
+    } else if (id == "settings-tab-hands") {
+        settings_tab_ = 1;
+        dirty = true;
+    } else if (id == "settings-tab-features") {
+        settings_tab_ = 2;
+        dirty = true;
+    } else if (id == "settings-tab-capture") {
+        settings_tab_ = 3;
+        dirty = true;
+    } else if (id == "voice-prev" || id == "voice-next") {
+        pending_.voice_enabled = !pending_.voice_enabled;
+        dirty = true;
+    } else if (id == "speech-model-prev" || id == "speech-model-next") {
+        const std::vector<std::string> models = {"ggml-tiny.en.bin", "ggml-base.en.bin",
+                                                 "ggml-small.en.bin", "ggml-medium.en.bin",
+                                                 "ggml-small.bin"};
+        auto it = std::find(models.begin(), models.end(), pending_.speech_model);
+        std::size_t idx =
+            (it == models.end()) ? 2 : static_cast<std::size_t>(std::distance(models.begin(), it));
+        if (id == "speech-model-next") {
+            idx = (idx + 1) % models.size();
+        } else {
+            idx = (idx + models.size() - 1) % models.size();
+        }
+        pending_.speech_model = models[idx];
+        dirty = true;
+    } else if (id == "clipboard-opt-prev" || id == "clipboard-opt-next") {
+        pending_.clipboard_enabled = !pending_.clipboard_enabled;
+        dirty = true;
+    } else if (id == "haptics-opt-prev" || id == "haptics-opt-next") {
+        pending_.haptics_enabled = !pending_.haptics_enabled;
+        dirty = true;
+    } else if (id == "hand-opt-prev" || id == "hand-opt-next") {
+        pending_.hand_enabled = !pending_.hand_enabled;
+        dirty = true;
+    } else if (id == "hand-distance-prev" || id == "hand-distance-next") {
+        const std::vector<int> distances = {6, 9, 12, 15, 20, 25};
+        auto it = std::find(distances.begin(), distances.end(), pending_.hand_distance_cm);
+        std::size_t idx =
+            (it == distances.end()) ? 2 : static_cast<std::size_t>(std::distance(distances.begin(), it));
+        if (id == "hand-distance-next") {
+            idx = (idx + 1) % distances.size();
+        } else {
+            idx = (idx + distances.size() - 1) % distances.size();
+        }
+        pending_.hand_distance_cm = distances[idx];
+        dirty = true;
+    } else if (id == "hand-pitch-prev" || id == "hand-pitch-next") {
+        const std::vector<int> angles = {0, 10, 15, 20, 25, 30, 35, 40};
+        auto it = std::find(angles.begin(), angles.end(), pending_.hand_pitch_deg);
+        std::size_t idx =
+            (it == angles.end()) ? 4 : static_cast<std::size_t>(std::distance(angles.begin(), it));
+        if (id == "hand-pitch-next") {
+            idx = (idx + 1) % angles.size();
+        } else {
+            idx = (idx + angles.size() - 1) % angles.size();
+        }
+        pending_.hand_pitch_deg = angles[idx];
+        dirty = true;
+    } else if (id == "touch-typing-prev" || id == "touch-typing-next") {
+        pending_.touch_typing_enabled = !pending_.touch_typing_enabled;
+        dirty = true;
+    } else if (id == "proximity-grab-prev" || id == "proximity-grab-next") {
+        pending_.proximity_grab_enabled = !pending_.proximity_grab_enabled;
+        dirty = true;
+    } else if (id == "horizon-lock-prev" || id == "horizon-lock-next") {
+        pending_.horizon_lock_enabled = !pending_.horizon_lock_enabled;
+        dirty = true;
+    } else if (id == "hands-defaults") {
+        pending_.hand_enabled = true;
+        pending_.hand_distance_cm = 12;
+        pending_.hand_pitch_deg = 25;
+        pending_.touch_typing_enabled = true;
+        pending_.proximity_grab_enabled = true;
+        pending_.horizon_lock_enabled = true;
+        status_ = "VR & hand options reset to defaults";
+        dirty = true;
+    } else if (id == "capture-opt-prev" || id == "capture-opt-next") {
+        pending_.capture_enabled = !pending_.capture_enabled;
+        dirty = true;
+    } else if (id == "capture-quality-prev" || id == "capture-quality-next") {
+        const std::vector<std::string> qualities = {"1080p High", "1080p Standard", "720p Performance",
+                                                    "1080p Ultra"};
+        auto it = std::find(qualities.begin(), qualities.end(), pending_.capture_quality);
+        std::size_t idx =
+            (it == qualities.end()) ? 0 : static_cast<std::size_t>(std::distance(qualities.begin(), it));
+        if (id == "capture-quality-next") {
+            idx = (idx + 1) % qualities.size();
+        } else {
+            idx = (idx + qualities.size() - 1) % qualities.size();
+        }
+        pending_.capture_quality = qualities[idx];
+        dirty = true;
+    } else if (id == "capture-save-dir-prev" || id == "capture-save-dir-next") {
+        const std::vector<std::string> dirs = {"~/Videos/Recordings", "~/Videos", "~/Desktop",
+                                               "~/Downloads"};
+        auto it = std::find(dirs.begin(), dirs.end(), pending_.capture_save_dir);
+        std::size_t idx =
+            (it == dirs.end()) ? 0 : static_cast<std::size_t>(std::distance(dirs.begin(), it));
+        if (id == "capture-save-dir-next") {
+            idx = (idx + 1) % dirs.size();
+        } else {
+            idx = (idx + dirs.size() - 1) % dirs.size();
+        }
+        pending_.capture_save_dir = dirs[idx];
+        dirty = true;
+    } else if (id == "capture-audio-prev" || id == "capture-audio-next") {
+        pending_.capture_audio = !pending_.capture_audio;
+        dirty = true;
+    } else if (id == "capture-defaults") {
+        pending_.capture_enabled = true;
+        pending_.capture_quality = "1080p High";
+        pending_.capture_save_dir = "~/Videos/Recordings";
+        pending_.capture_audio = true;
+        status_ = "Capture options reset to defaults";
+        dirty = true;
+    } else if (id == "features-defaults") {
+        pending_.voice_enabled = true;
+        pending_.speech_model = "ggml-small.en.bin";
+        pending_.clipboard_enabled = true;
+        pending_.hand_enabled = true;
+        pending_.hand_distance_cm = 12;
+        pending_.hand_pitch_deg = 25;
+        pending_.touch_typing_enabled = true;
+        pending_.proximity_grab_enabled = true;
+        pending_.haptics_enabled = true;
+        pending_.horizon_lock_enabled = true;
+        pending_.capture_enabled = true;
+        pending_.capture_quality = "1080p High";
+        pending_.capture_save_dir = "~/Videos/Recordings";
+        pending_.capture_audio = true;
+        status_ = "Feature options reset to defaults";
+        dirty = true;
     } else if (id == "recenter") {
         cancel();
         placement_actions_.clear();

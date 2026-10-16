@@ -1,5 +1,6 @@
 #pragma once
 
+#include "capture.hpp"
 #include "cjk.hpp"
 #include "dictation.hpp"
 #include "instance.hpp"
@@ -64,6 +65,7 @@ class App {
     void apply(Selection selection);
     void reload();
     const fs::path& config_dir() const { return options_.config_dir; }
+    const fs::path& data_dir() const { return options_.data_dir; }
     bool quitting() const { return quit_; }
     bool take_recenter();
     void open_clipboard();
@@ -71,6 +73,22 @@ class App {
     bool dirty{true};
     PanelRenderer renderer;
     const Selection& selection() const { return settings_.active; }
+    bool hand_enabled() const { return settings_.active.hand_enabled; }
+    double hand_distance_meters() const {
+        return std::max(0.03, settings_.active.hand_distance_cm / 100.0);
+    }
+    int hand_pitch_degrees() const { return settings_.active.hand_pitch_deg; }
+    bool voice_enabled() const { return settings_.active.voice_enabled; }
+    bool clipboard_enabled() const { return settings_.active.clipboard_enabled; }
+    bool touch_typing_enabled() const { return settings_.active.touch_typing_enabled; }
+    bool proximity_grab_enabled() const { return settings_.active.proximity_grab_enabled; }
+    bool haptics_enabled() const { return settings_.active.haptics_enabled; }
+    bool horizon_lock_enabled() const { return settings_.active.horizon_lock_enabled; }
+    bool capture_enabled() const { return settings_.active.capture_enabled; }
+    const std::string& capture_quality() const { return settings_.active.capture_quality; }
+    const std::string& capture_save_dir() const { return settings_.active.capture_save_dir; }
+    bool capture_audio() const { return settings_.active.capture_audio; }
+    bool capture_active() const { return capture_ && capture_->active(); }
 
   private:
     std::vector<Control> controls() const;
@@ -112,6 +130,7 @@ class App {
     std::map<unsigned, std::string> hovered_, pressed_controls_;
     std::string status_;
     bool settings_open_{false}, quit_{false}, recenter_{false};
+    int settings_tab_{0};
     std::vector<PlacementAction> placement_actions_;
     std::size_t favorite_index_{};
     bool dragging_{};
@@ -119,8 +138,16 @@ class App {
     bool backend_ready_{true}, backend_can_resume_{};
     bool clipboard_open_{false};
     std::vector<std::string> clipboard_history_;
+    void load_clipboard_history();
+    void save_clipboard_history();
+    double copy_poll_time_{0.0};
+    bool copy_poll_pending_{false};
     std::map<unsigned, double> paste_down_time_;
     std::set<unsigned> paste_long_pressed_;
+    std::unique_ptr<VideoCapture> capture_;
+    std::map<unsigned, double> capture_down_time_;
+    std::set<unsigned> capture_long_pressed_;
+    double last_capture_tick_{0.0};
 };
 
 double monotonic_seconds();

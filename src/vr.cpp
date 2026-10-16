@@ -199,6 +199,16 @@ class VrPanel {
         if (!connected_) {
             return;
         }
+        if (handle_left_) {
+            vr::VROverlay()->HideOverlay(handle_left_);
+            vr::VROverlay()->DestroyOverlay(handle_left_);
+            handle_left_ = 0;
+        }
+        if (handle_right_) {
+            vr::VROverlay()->HideOverlay(handle_right_);
+            vr::VROverlay()->DestroyOverlay(handle_right_);
+            handle_right_ = 0;
+        }
         if (handle_) {
             vr::VROverlay()->HideOverlay(handle_);
             vr::VROverlay()->ClearOverlayTexture(handle_);
@@ -323,11 +333,74 @@ class VrPanel {
             reported_native_ = native;
         }
     }
+    void setup_hands(const fs::path& vr_dir, const fs::path& data_dir) {
+        auto* overlay = vr::VROverlay();
+        if (!overlay) {
+            return;
+        }
+        overlay->CreateOverlay("org.framekeyboard.hand_left", "Left Hand Pointer", &handle_left_);
+        overlay->CreateOverlay("org.framekeyboard.hand_right", "Right Hand Pointer", &handle_right_);
+
+        auto find_png = [&](const std::string& filename) -> fs::path {
+            const std::vector<fs::path> candidates = {
+                vr_dir / filename, data_dir / "vr" / filename, data_dir / filename,
+                fs::path("/home/steamos/.local/share/framekeyboard/current/share/framekeyboard/vr") /
+                    filename,
+                fs::current_path() / "vr" / filename};
+            for (const auto& p : candidates) {
+                std::error_code ec;
+                if (fs::is_regular_file(p, ec)) {
+                    return fs::absolute(p);
+                }
+            }
+            return {};
+        };
+
+        const auto left_png = find_png("hand_pointing_left.png");
+        const auto right_png = find_png("hand_pointing_right.png");
+        if (!left_png.empty()) {
+            overlay->SetOverlayFromFile(handle_left_, left_png.string().c_str());
+        }
+        if (!right_png.empty()) {
+            overlay->SetOverlayFromFile(handle_right_, right_png.string().c_str());
+        }
+        for (auto h : {handle_left_, handle_right_}) {
+            if (h) {
+                overlay->SetOverlayWidthInMeters(h, 0.14f);
+                overlay->SetOverlaySortOrder(h, 2);
+                overlay->SetOverlayFlag(h, vr::VROverlayFlags_VisibleInDashboard, true);
+                overlay->SetOverlayFlag(h, vr::VROverlayFlags_NoDashboardTab, true);
+            }
+        }
+    }
+    void update_hand(bool is_left, bool show, const vr::HmdMatrix34_t* mat = nullptr) {
+        auto h = is_left ? handle_left_ : handle_right_;
+        if (!h) {
+            return;
+        }
+        auto* overlay = vr::VROverlay();
+        if (show && mat) {
+            overlay->SetOverlayTransformAbsolute(h, vr::TrackingUniverseStanding, mat);
+            overlay->ShowOverlay(h);
+        } else {
+            overlay->HideOverlay(h);
+        }
+    }
+    void hide_hands() {
+        auto* overlay = vr::VROverlay();
+        if (handle_left_) {
+            overlay->HideOverlay(handle_left_);
+        }
+        if (handle_right_) {
+            overlay->HideOverlay(handle_right_);
+        }
+    }
     vr::VROverlayHandle_t handle() const { return handle_; }
 
   private:
     bool connected_{};
     vr::VROverlayHandle_t handle_{};
+    vr::VROverlayHandle_t handle_left_{}, handle_right_{};
     VulkanContext vulkan_;
     PanelTexture texture_;
     std::optional<bool> reported_native_;
@@ -344,6 +417,7 @@ int run_vr(App& app, VrInstance& instance, double duration) {
         manifest = fs::canonical("/proc/self/exe").parent_path() / "vr/actions.json";
     }
     haptics.connect(manifest);
+    panel.setup_hands(manifest.parent_path(), app.data_dir());
     KeyHaptics feedback;
     GrabInput grip_input;
     if (!grip_input.connect()) {
@@ -371,6 +445,10 @@ int run_vr(App& app, VrInstance& instance, double duration) {
             feedback.cancel_pointer(it->second.pointer);
             it->second.pressed = false;
         }
+        const auto role = vr::VRSystem()->GetControllerRoleForTrackedDeviceIndex(device);
+        const bool hand_is_left = (role == vr::TrackedControllerRole_LeftHand) ||
+                                  (role != vr::TrackedControllerRole_RightHand && (device % 2 == 1));
+        panel.update_hand(hand_is_left, false);
     };
     struct ReleaseBeforeVrShutdown {
         App& app;
@@ -408,6 +486,7 @@ int run_vr(App& app, VrInstance& instance, double duration) {
     LaserDrag drag;
     auto stop_drag = [&](bool align_after_release = false) {
         feedback.cancel();
+        panel.hide_hands();
         // Tracking loss or timeout may already have stopped LaserDrag. Always
         // release the app's input gate as well; repeated cleanup is harmless.
         drag.stop();
@@ -425,6 +504,7 @@ int run_vr(App& app, VrInstance& instance, double duration) {
         }
     };
     auto hide_panel = [&] {
+        panel.hide_hands();
         app.set_interaction_active(false);
         stop_drag();
         hovered_devices.fill(false);
@@ -443,7 +523,9 @@ int run_vr(App& app, VrInstance& instance, double duration) {
         }
     };
     auto place_panel = [&](double now) {
-        const auto aligned = horizon.update(placement.transform(), now, drag.active());
+        const auto aligned = app.horizon_lock_enabled()
+                                 ? horizon.update(placement.transform(), now, drag.active())
+                                 : placement.transform();
         if (!displayed.ready() || aligned != displayed.transform() ||
             placement.width() != displayed.width() || transform_dirty) {
             displayed.restore(aligned, placement.width());
@@ -601,14 +683,62 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                 stop_drag(true);
             }
         } else if (visible && placement.ready()) {
+            const auto panel_t = displayed.transform();
+            const double pw = displayed.width();
+            const double ph = pw * (static_cast<double>(panel_height) / panel_width);
             for (const auto& grip : grips) {
-                if (grip.active && grip.pressed && grip.device < hovered_devices.size() &&
-                    hovered_devices[grip.device] && drag.start(grip, displayed, now)) {
+                if (!grip.active || !grip.pressed) {
+                    continue;
+                }
+                bool can_grab = (grip.device < hovered_devices.size() && hovered_devices[grip.device]);
+                if (!can_grab && app.proximity_grab_enabled()) {
+                    if (const auto ctrl = read_controller(grip.device)) {
+                        constexpr double local_tip_x = 0.0;
+                        constexpr double local_tip_y = 0.005;
+                        constexpr double local_tip_z = -0.080;
+
+                        const double tip_x = (*ctrl)[0][0] * local_tip_x + (*ctrl)[0][1] * local_tip_y +
+                                             (*ctrl)[0][2] * local_tip_z + (*ctrl)[0][3];
+                        const double tip_y = (*ctrl)[1][0] * local_tip_x + (*ctrl)[1][1] * local_tip_y +
+                                             (*ctrl)[1][2] * local_tip_z + (*ctrl)[1][3];
+                        const double tip_z = (*ctrl)[2][0] * local_tip_x + (*ctrl)[2][1] * local_tip_y +
+                                             (*ctrl)[2][2] * local_tip_z + (*ctrl)[2][3];
+
+                        const double dx = tip_x - panel_t[0][3];
+                        const double dy = tip_y - panel_t[1][3];
+                        const double dz = tip_z - panel_t[2][3];
+
+                        const double clx = dx * panel_t[0][0] + dy * panel_t[1][0] + dz * panel_t[2][0];
+                        const double cly = dx * panel_t[0][1] + dy * panel_t[1][1] + dz * panel_t[2][1];
+                        const double clz = dx * panel_t[0][2] + dy * panel_t[1][2] + dz * panel_t[2][2];
+
+                        const double trigger_distance = app.hand_distance_meters();
+                        // Allow grabbing when the controller is closer to the keyboard (same distance as
+                        // when the hand appears):
+                        if (clz >= -0.15 && clz <= trigger_distance && std::abs(clx) <= pw * 0.65 &&
+                            std::abs(cly) <= ph * 0.75) {
+                            can_grab = true;
+                        }
+                    }
+                }
+                if (can_grab && drag.start(grip, displayed, now)) {
+                    // Release any active drumstick presses:
+                    for (auto& [dev, drum] : drumsticks) {
+                        if (drum.pressed) {
+                            app.up(drum.pointer, 0, 0);
+                            feedback.release(drum.pointer);
+                            drum.pressed = false;
+                        }
+                    }
                     // Capture the visible pose, not the uncorrected pose behind
                     // horizon assistance, so regrabbing never snaps the keyboard.
                     placement.restore(displayed.transform(), displayed.width());
                     horizon.reset();
                     feedback.cancel();
+                    if (app.haptics_enabled()) {
+                        haptics.send(grip.device, KeyFeedback::Press);
+                    }
+                    panel.hide_hands();
                     app.set_dragging(true);
                     break;
                 }
@@ -622,10 +752,15 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                 if (vr::VRSystem()->GetTrackedDeviceClass(device) != vr::TrackedDeviceClass_Controller) {
                     continue;
                 }
+                const auto role = vr::VRSystem()->GetControllerRoleForTrackedDeviceIndex(device);
+                const bool hand_is_left =
+                    (role == vr::TrackedControllerRole_LeftHand) ||
+                    (role != vr::TrackedControllerRole_RightHand && (device % 2 == 1));
                 const bool grabbing = std::any_of(grips.begin(), grips.end(), [&](const auto& grip) {
                     return grip.active && grip.held && grip.device == device;
                 });
                 if (grabbing) {
+                    panel.update_hand(hand_is_left, false);
                     continue;
                 }
                 auto ctrl = read_controller(device);
@@ -637,14 +772,20 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                         feedback.release(drum.pointer);
                         drum.pressed = false;
                     }
+                    panel.update_hand(hand_is_left, false);
                     continue;
                 }
-                const double fx = -(*ctrl)[0][2];
-                const double fy = -(*ctrl)[1][2];
-                const double fz = -(*ctrl)[2][2];
-                const double tip_x = (*ctrl)[0][3] + fx * 0.085;
-                const double tip_y = (*ctrl)[1][3] + fy * 0.085;
-                const double tip_z = (*ctrl)[2][3] + fz * 0.085;
+                // Physical tip of the controller (front nose/ring):
+                constexpr double local_tip_x = 0.0;
+                constexpr double local_tip_y = 0.005;
+                constexpr double local_tip_z = -0.080;
+
+                const double tip_x = (*ctrl)[0][0] * local_tip_x + (*ctrl)[0][1] * local_tip_y +
+                                     (*ctrl)[0][2] * local_tip_z + (*ctrl)[0][3];
+                const double tip_y = (*ctrl)[1][0] * local_tip_x + (*ctrl)[1][1] * local_tip_y +
+                                     (*ctrl)[1][2] * local_tip_z + (*ctrl)[1][3];
+                const double tip_z = (*ctrl)[2][0] * local_tip_x + (*ctrl)[2][1] * local_tip_y +
+                                     (*ctrl)[2][2] * local_tip_z + (*ctrl)[2][3];
 
                 const double dx = tip_x - panel_t[0][3];
                 const double dy = tip_y - panel_t[1][3];
@@ -657,21 +798,68 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                 const double px = (local_x / pw + 0.5) * panel_width;
                 const double py = (0.5 - local_y / ph) * panel_height;
 
+                const double trigger_distance = app.hand_distance_meters();
+                const bool near_keyboard =
+                    (local_z >= -0.15 && local_z <= trigger_distance && std::abs(local_x) <= pw * 0.65 &&
+                     std::abs(local_y) <= ph * 0.75);
+
+                if (near_keyboard && app.hand_enabled()) {
+                    // Hand overlay attached rigidly to controller:
+                    // Rotated forward/down so the finger points into the keys,
+                    // and the hand is lowered down directly onto the controller body.
+                    const double pitch_deg = static_cast<double>(app.hand_pitch_degrees());
+                    const double theta = pitch_deg * M_PI / 180.0;
+                    const double sin_p = std::sin(theta);
+                    const double cos_p = std::cos(theta);
+
+                    // Fingertip in texture is at y=24 out of 512, offset = 0.14 * (232/512)
+                    constexpr double tip_offset = 0.14 * ((256.0 - 24.0) / 512.0); // 0.0634375m
+
+                    // In controller local space:
+                    // Up (+Y) along finger pointing direction: [0, -sin_p, -cos_p]
+                    // Normal (+Z) along top/back of hand facing user: [0, cos_p, -sin_p]
+                    // Right (+X) along controller right: [1, 0, 0]
+                    // Center aligns fingertip with controller tip:
+                    const double center_x = local_tip_x;
+                    const double center_y = local_tip_y + sin_p * tip_offset;
+                    const double center_z = local_tip_z + cos_p * tip_offset;
+
+                    const std::array<std::array<double, 4>, 3> mat_hand_ctrl{
+                        {{{1.0, 0.0, 0.0, center_x}},
+                         {{0.0, -sin_p, cos_p, center_y}},
+                         {{0.0, -cos_p, -sin_p, center_z}}}};
+
+                    vr::HmdMatrix34_t hand_mat{};
+                    for (int r = 0; r < 3; ++r) {
+                        for (int c = 0; c < 3; ++c) {
+                            hand_mat.m[r][c] = static_cast<float>((*ctrl)[r][0] * mat_hand_ctrl[0][c] +
+                                                                  (*ctrl)[r][1] * mat_hand_ctrl[1][c] +
+                                                                  (*ctrl)[r][2] * mat_hand_ctrl[2][c]);
+                        }
+                        hand_mat.m[r][3] = static_cast<float>(
+                            (*ctrl)[r][0] * mat_hand_ctrl[0][3] + (*ctrl)[r][1] * mat_hand_ctrl[1][3] +
+                            (*ctrl)[r][2] * mat_hand_ctrl[2][3] + (*ctrl)[r][3]);
+                    }
+                    panel.update_hand(hand_is_left, true, &hand_mat);
+                } else {
+                    panel.update_hand(hand_is_left, false);
+                }
+
                 const bool on_panel = (px >= 0.0 && px < panel_width && py >= 0.0 && py < panel_height);
-                if (on_panel) {
+                if (on_panel && app.touch_typing_enabled()) {
                     if (!drum.pressed) {
-                        if (local_z <= 0.006 && local_z >= -0.05) {
+                        if (local_z <= 0.008 && local_z >= -0.06) {
                             drum.pressed = true;
                             if (app.down(drum.pointer, px, py, now)) {
                                 feedback.press(drum.pointer, device);
                             }
-                        } else if (local_z > 0.006 && local_z <= 0.035) {
+                        } else if (local_z > 0.008 && local_z <= 0.040) {
                             if (app.move(drum.pointer, px, py)) {
                                 feedback.hover(device);
                             }
                         }
                     } else {
-                        if (local_z > 0.018 || local_z < -0.06) {
+                        if (local_z > 0.020 || local_z < -0.08) {
                             drum.pressed = false;
                             if (app.up(drum.pointer, px, py)) {
                                 feedback.release(drum.pointer);
@@ -687,9 +875,11 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                     }
                 }
             }
+        } else {
+            panel.hide_hands();
         }
         for (const auto& [device, kind] : feedback.take(now)) {
-            if (!drag.active() && visible) {
+            if (!drag.active() && visible && app.haptics_enabled()) {
                 haptics.send(device, kind);
             }
         }

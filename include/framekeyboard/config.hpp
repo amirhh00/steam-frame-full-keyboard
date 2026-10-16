@@ -30,7 +30,22 @@ struct Language {
     std::vector<std::string> required_keys;
 };
 struct Selection {
+    bool operator==(const Selection&) const = default;
     std::string layout{"en-us-full"}, language{"en-us"}, theme{"graphite"};
+    bool voice_enabled{true};
+    std::string speech_model{"ggml-small.en.bin"};
+    bool clipboard_enabled{true};
+    bool hand_enabled{true};
+    int hand_distance_cm{12};
+    int hand_pitch_deg{25};
+    bool touch_typing_enabled{true};
+    bool proximity_grab_enabled{true};
+    bool haptics_enabled{true};
+    bool horizon_lock_enabled{true};
+    bool capture_enabled{true};
+    std::string capture_quality{"1080p High"};
+    std::string capture_save_dir{"~/Videos/Recordings"};
+    bool capture_audio{true};
 };
 struct Favorite {
     std::string id, name;
