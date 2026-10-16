@@ -82,10 +82,10 @@ GripTransition GripLatch::update(std::optional<double> angle_degrees) {
         return {};
     }
     if (!armed_) {
-        armed_ = *angle_degrees < .5;
+        armed_ = *angle_degrees < release_threshold_;
         return {};
     }
-    const bool held = *angle_degrees >= (held_ ? .5 : 1.0);
+    const bool held = *angle_degrees >= (held_ ? release_threshold_ : press_threshold_);
     const GripTransition state{held, held && !held_};
     held_ = held;
     return state;

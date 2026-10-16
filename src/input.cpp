@@ -398,6 +398,25 @@ bool KeyboardState::down(unsigned pointer, const Key& key, double now, bool loca
     const int code =
         key.action_kind == ActionKind::Key ? (native_code ? native_code : key_code(key.action)) : 0;
     if (is_modifier(code)) {
+        if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) {
+            if (shift_locked_) {
+                set_shift_locked(false);
+                Press p;
+                p.id = key.id;
+                p.modifier = code;
+                p.used = true;
+                presses_.emplace(pointer, std::move(p));
+                return true;
+            } else if (latched_.contains(code)) {
+                set_shift_locked(true);
+                Press p;
+                p.id = key.id;
+                p.modifier = code;
+                p.used = true;
+                presses_.emplace(pointer, std::move(p));
+                return true;
+            }
+        }
         press.modifier = code;
         press.used = !key.sticky || references_.contains(code);
         if (!key.sticky) {
@@ -525,8 +544,26 @@ void KeyboardState::cancel_all() {
     references_.clear();
     presses_.clear();
     latched_.clear();
+    shift_locked_ = false;
     if (failure) {
         std::rethrow_exception(failure);
+    }
+}
+bool KeyboardState::toggle_shift_lock() {
+    set_shift_locked(!shift_locked_);
+    return shift_locked_;
+}
+void KeyboardState::set_shift_locked(bool locked) {
+    if (shift_locked_ == locked) {
+        return;
+    }
+    shift_locked_ = locked;
+    if (shift_locked_) {
+        latched_.erase(KEY_LEFTSHIFT);
+        latched_.erase(KEY_RIGHTSHIFT);
+        acquire(KEY_LEFTSHIFT);
+    } else {
+        release(KEY_LEFTSHIFT);
     }
 }
 bool KeyboardState::tick(double now) {

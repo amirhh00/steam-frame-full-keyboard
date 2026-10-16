@@ -167,6 +167,9 @@ Selection selection(json_object* object) {
     if (auto* ca = field(object, "capture_audio", json_type_boolean, true)) {
         s.capture_audio = json_object_get_boolean(ca);
     }
+    if (auto* bs = field(object, "bumper_shift_enabled", json_type_boolean, true)) {
+        s.bumper_shift_enabled = json_object_get_boolean(bs);
+    }
     return s;
 }
 
@@ -535,6 +538,8 @@ void save_selection(const fs::path& user_dir, const Selection& s) {
     json_object_object_add(active, "capture_save_dir",
                            json_object_new_string(s.capture_save_dir.c_str()));
     json_object_object_add(active, "capture_audio", json_object_new_boolean(s.capture_audio));
+    json_object_object_add(active, "bumper_shift_enabled",
+                           json_object_new_boolean(s.bumper_shift_enabled));
     json_object_object_add(document.get(), "active", active);
     const std::string data =
         std::string(json_object_to_json_string_ext(document.get(), JSON_C_TO_STRING_PRETTY)) + '\n';

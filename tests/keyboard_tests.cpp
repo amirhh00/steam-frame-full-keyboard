@@ -206,6 +206,53 @@ void state_tests(const fk::Layout& layout) {
     state.cancel_all();
     require(sink.events == std::vector<std::pair<int, int>>{{KEY_ENTER, 1}, {KEY_ENTER, 0}},
             "Enter and cancellation");
+
+    // Shift Lock tests:
+    sink.events.clear();
+    require(!state.shift_locked(), "shift lock starts off");
+    require(state.toggle_shift_lock(), "toggle_shift_lock turns it on");
+    require(state.shift_locked() && state.modifiers().contains(KEY_LEFTSHIFT), "shift locked");
+    require(sink.events == std::vector<std::pair<int, int>>{{KEY_LEFTSHIFT, 1}},
+            "locking shift physically acquires KEY_LEFTSHIFT");
+    // Type KeyA while Shift is locked:
+    state.down(0, key(layout, "KeyA"), 50);
+    state.up(0);
+    require(sink.events == std::vector<std::pair<int, int>>{{KEY_LEFTSHIFT, 1}, {KEY_A, 1}, {KEY_A, 0}},
+            "typing while shift locked keeps KEY_LEFTSHIFT held across keys");
+    require(state.shift_locked() && state.modifiers().contains(KEY_LEFTSHIFT),
+            "shift lock remains active after key release");
+    // Type KeyB while Shift is locked:
+    state.down(0, key(layout, "KeyB"), 51);
+    state.up(0);
+    require(sink.events ==
+                std::vector<std::pair<int, int>>{
+                    {KEY_LEFTSHIFT, 1}, {KEY_A, 1}, {KEY_A, 0}, {KEY_B, 1}, {KEY_B, 0}},
+            "second key also typed with shift held");
+    // Tap on-screen Shift while locked: unlocks shift:
+    state.down(0, key(layout, "ShiftLeft"), 52);
+    state.up(0);
+    require(!state.shift_locked() && !state.modifiers().contains(KEY_LEFTSHIFT),
+            "tapping Shift while shift locked turns it off");
+    require(sink.events.back() == std::pair<int, int>{KEY_LEFTSHIFT, 0},
+            "unlocking shift physically releases KEY_LEFTSHIFT");
+
+    // Double-tap on-screen Shift to activate Shift Lock:
+    sink.events.clear();
+    // First tap latches Shift (one-shot):
+    state.down(0, key(layout, "ShiftLeft"), 60);
+    state.up(0);
+    require(state.modifiers().contains(KEY_LEFTSHIFT) && !state.shift_locked(),
+            "first tap latches Shift");
+    // Second tap while latched upgrades to Shift Lock:
+    state.down(0, key(layout, "ShiftLeft"), 60.2);
+    state.up(0);
+    require(state.shift_locked(), "second tap while latched activates shift lock");
+    require(sink.events == std::vector<std::pair<int, int>>{{KEY_LEFTSHIFT, 1}},
+            "shift lock acquired on double tap");
+    // cancel_all clears shift lock cleanly:
+    state.cancel_all();
+    require(!state.shift_locked() && sink.events.back() == std::pair<int, int>{KEY_LEFTSHIFT, 0},
+            "cancel_all clears shift lock and releases key");
 }
 void profile_tests(const fk::Profiles& defaults) {
     TemporaryDirectory directory;
@@ -233,16 +280,31 @@ void profile_tests(const fk::Profiles& defaults) {
                 saved.active.hand_distance_cm == 12 && saved.active.hand_pitch_deg == 25 &&
                 saved.active.speech_model == "ggml-small.en.bin" && saved.active.touch_typing_enabled &&
                 saved.active.proximity_grab_enabled && saved.active.haptics_enabled &&
-                saved.active.horizon_lock_enabled,
+                saved.active.horizon_lock_enabled && saved.active.bumper_shift_enabled,
             "default feature options populated");
-    fk::save_selection(directory.path, {"en-us-full", "de-de", "midnight", false, "ggml-tiny.en.bin",
-                                        false, false, 15, 30, false, false, false, false});
+    fk::Selection custom_sel;
+    custom_sel.layout = "en-us-full";
+    custom_sel.language = "de-de";
+    custom_sel.theme = "midnight";
+    custom_sel.voice_enabled = false;
+    custom_sel.speech_model = "ggml-tiny.en.bin";
+    custom_sel.clipboard_enabled = false;
+    custom_sel.hand_enabled = false;
+    custom_sel.hand_distance_cm = 15;
+    custom_sel.hand_pitch_deg = 30;
+    custom_sel.touch_typing_enabled = false;
+    custom_sel.proximity_grab_enabled = false;
+    custom_sel.haptics_enabled = false;
+    custom_sel.horizon_lock_enabled = false;
+    custom_sel.bumper_shift_enabled = false;
+    fk::save_selection(directory.path, custom_sel);
     saved = fk::load_settings(directory.path, errors);
     require(!saved.active.voice_enabled && saved.active.speech_model == "ggml-tiny.en.bin" &&
                 !saved.active.clipboard_enabled && !saved.active.hand_enabled &&
                 saved.active.hand_distance_cm == 15 && saved.active.hand_pitch_deg == 30 &&
                 !saved.active.touch_typing_enabled && !saved.active.proximity_grab_enabled &&
-                !saved.active.haptics_enabled && !saved.active.horizon_lock_enabled,
+                !saved.active.haptics_enabled && !saved.active.horizon_lock_enabled &&
+                !saved.active.bumper_shift_enabled,
             "custom feature options saved and reloaded");
     std::ifstream file(directory.path / "config.json");
     const std::string content((std::istreambuf_iterator<char>(file)), {});
@@ -333,6 +395,7 @@ void app_tests() {
     click_control("touch-typing-next");   // Toggles touch_typing_enabled off
     click_control("proximity-grab-next"); // Toggles proximity_grab_enabled off
     click_control("horizon-lock-next");   // Toggles horizon_lock_enabled off
+    click_control("bumper-shift-next");   // Toggles bumper_shift_enabled off
     // Test Capture Tab:
     click_control("settings-tab-capture");
     click_control("capture-opt-next");      // Toggles capture_enabled off
@@ -350,6 +413,7 @@ void app_tests() {
     require(!app.touch_typing_enabled(), "touch typing disabled after apply");
     require(!app.proximity_grab_enabled(), "proximity grab disabled after apply");
     require(!app.horizon_lock_enabled(), "horizon lock disabled after apply");
+    require(!app.bumper_shift_enabled(), "bumper shift disabled after apply");
     require(!app.capture_enabled(), "capture disabled after apply");
     require(app.capture_quality() == "1080p Standard", "capture quality updated after apply");
     require(app.capture_save_dir() == "~/Videos", "capture save dir updated after apply");
@@ -376,8 +440,14 @@ void app_tests() {
     click_control("apply");
     require(app.hand_enabled() && std::abs(app.hand_distance_meters() - 0.12) < 0.001 &&
                 app.hand_pitch_degrees() == 25 && app.touch_typing_enabled() &&
-                app.proximity_grab_enabled() && app.horizon_lock_enabled(),
+                app.proximity_grab_enabled() && app.horizon_lock_enabled() && app.bumper_shift_enabled(),
             "VR & hand defaults restored");
+
+    require(!app.shift_locked(), "shift lock starts off in app");
+    app.toggle_shift_lock();
+    require(app.shift_locked(), "toggle_shift_lock turns it on");
+    app.toggle_shift_lock();
+    require(!app.shift_locked(), "toggle_shift_lock turns it off");
 
     // Open settings again, verify features-defaults reset
     app.show_settings();

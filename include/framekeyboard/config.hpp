@@ -46,6 +46,7 @@ struct Selection {
     std::string capture_quality{"1080p High"};
     std::string capture_save_dir{"~/Videos/Recordings"};
     bool capture_audio{true};
+    bool bumper_shift_enabled{true};
 };
 struct Favorite {
     std::string id, name;

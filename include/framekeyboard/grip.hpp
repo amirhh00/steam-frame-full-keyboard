@@ -26,13 +26,18 @@ struct GripTransition {
 };
 class GripLatch {
   public:
-    // Frame's grip component has 9.5 degrees of travel. A small dead zone and
-    // separate release threshold keep a resting finger from chattering capture.
+    GripLatch() = default;
+    GripLatch(double press_threshold, double release_threshold)
+        : press_threshold_(press_threshold), release_threshold_(release_threshold) {}
+    // Frame's grip component has 9.5 degrees of travel; bumper has 2.6 degrees.
+    // A small dead zone and separate release threshold keep a resting finger from chattering capture.
     // Missing samples disarm it; startup/reconnect requires a release first.
     GripTransition update(std::optional<double> angle_degrees);
     void reset();
 
   private:
+    double press_threshold_{1.0};
+    double release_threshold_{0.5};
     bool armed_{}, held_{};
 };
 } // namespace framekeyboard

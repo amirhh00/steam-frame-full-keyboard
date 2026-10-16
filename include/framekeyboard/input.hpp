@@ -78,6 +78,9 @@ class KeyboardState {
     bool caps() const { return caps_; }
     bool num() const { return num_; }
     bool active() const { return !presses_.empty(); }
+    bool toggle_shift_lock();
+    bool shift_locked() const { return shift_locked_; }
+    void set_shift_locked(bool locked);
 
   private:
     struct Press {
@@ -95,5 +98,6 @@ class KeyboardState {
     std::map<int, unsigned> references_;
     std::set<int> latched_;
     bool caps_{false}, num_{false};
+    bool shift_locked_{false};
 };
 } // namespace framekeyboard

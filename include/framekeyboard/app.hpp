@@ -89,6 +89,9 @@ class App {
     const std::string& capture_save_dir() const { return settings_.active.capture_save_dir; }
     bool capture_audio() const { return settings_.active.capture_audio; }
     bool capture_active() const { return capture_ && capture_->active(); }
+    bool bumper_shift_enabled() const { return settings_.active.bumper_shift_enabled; }
+    void toggle_shift_lock();
+    bool shift_locked() const { return keyboard_.shift_locked(); }
 
   private:
     std::vector<Control> controls() const;

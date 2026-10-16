@@ -462,37 +462,42 @@ std::vector<Control> App::controls() const {
         }
     } else if (settings_tab_ == 1) {
         auto row = [&](const std::string& kind, const std::string& name, double y) {
-            result.push_back({kind + "-prev", "<", {40, y, 65, 46}});
-            result.push_back({kind + "-label", name, {115, y, 1370, 46}});
-            result.push_back({kind + "-next", ">", {1495, y, 65, 46}});
+            result.push_back({kind + "-prev", "<", {40, y, 65, 42}});
+            result.push_back({kind + "-label", name, {115, y, 1370, 42}});
+            result.push_back({kind + "-next", ">", {1495, y, 65, 42}});
         };
         row("hand-opt",
-            "Virtual hand pointer: " + std::string(pending_.hand_enabled ? "Enabled" : "Disabled"), 68);
+            "Virtual hand pointer: " + std::string(pending_.hand_enabled ? "Enabled" : "Disabled"), 64);
 
         row("hand-distance",
             "Hand appearance distance: " + std::to_string(pending_.hand_distance_cm) + " cm" +
                 (pending_.hand_distance_cm == 12 ? " (recommended)" : ""),
-            122);
+            112);
 
         row("hand-pitch",
             "Hand rotation angle: " + std::to_string(pending_.hand_pitch_deg) + "°" +
                 (pending_.hand_pitch_deg == 25 ? " (recommended)" : ""),
-            176);
+            160);
 
         row("touch-typing",
             "Direct touch typing: " +
                 std::string(pending_.touch_typing_enabled ? "Enabled" : "Disabled"),
-            230);
+            208);
 
         row("proximity-grab",
             "Grab without laser: " +
                 std::string(pending_.proximity_grab_enabled ? "Enabled" : "Disabled"),
-            284);
+            256);
 
         row("horizon-lock",
             "Horizon auto-leveling: " +
                 std::string(pending_.horizon_lock_enabled ? "Enabled" : "Disabled"),
-            338);
+            304);
+
+        row("bumper-shift",
+            "Bumper (L1/R1) Shift toggle: " +
+                std::string(pending_.bumper_shift_enabled ? "Enabled" : "Disabled"),
+            352);
 
         result.push_back({"apply", "Apply and save", {350, 415, 280, 54}});
         result.push_back({"hands-defaults", "Reset VR defaults", {650, 415, 280, 54}});
@@ -1735,7 +1740,11 @@ void App::action(const std::string& id) {
         pending_.touch_typing_enabled = true;
         pending_.proximity_grab_enabled = true;
         pending_.horizon_lock_enabled = true;
+        pending_.bumper_shift_enabled = true;
         status_ = "VR & hand options reset to defaults";
+        dirty = true;
+    } else if (id == "bumper-shift-prev" || id == "bumper-shift-next") {
+        pending_.bumper_shift_enabled = !pending_.bumper_shift_enabled;
         dirty = true;
     } else if (id == "capture-opt-prev" || id == "capture-opt-next") {
         pending_.capture_enabled = !pending_.capture_enabled;
@@ -1791,6 +1800,7 @@ void App::action(const std::string& id) {
         pending_.capture_quality = "1080p High";
         pending_.capture_save_dir = "~/Videos/Recordings";
         pending_.capture_audio = true;
+        pending_.bumper_shift_enabled = true;
         status_ = "Feature options reset to defaults";
         dirty = true;
     } else if (id == "recenter") {
@@ -1822,5 +1832,10 @@ bool App::take_recenter() {
     const bool result = recenter_;
     recenter_ = false;
     return result;
+}
+void App::toggle_shift_lock() {
+    const bool locked = keyboard_.toggle_shift_lock();
+    status_ = locked ? "Shift Lock: ON" : "Shift Lock: OFF";
+    dirty = true;
 }
 } // namespace framekeyboard

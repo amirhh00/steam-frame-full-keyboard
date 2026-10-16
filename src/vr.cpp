@@ -53,11 +53,16 @@ struct GrabSample {
     vr::TrackedDeviceIndex_t device{vr::k_unTrackedDeviceIndexInvalid};
     double stick_y{};
     std::array<double, 3> ray_direction{0, 0, -1};
+    bool bumper_pressed{};
+    bool bumper_held{};
 };
 class GrabInput {
   public:
     void reset() {
         for (auto& latch : latches_) {
+            latch.reset();
+        }
+        for (auto& latch : bumper_latches_) {
             latch.reset();
         }
     }
@@ -81,6 +86,7 @@ class GrabInput {
             const auto device = vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(role);
             if (device != devices_[i]) {
                 latches_[i].reset();
+                bumper_latches_[i].reset();
                 devices_[i] = device;
                 sticks_[i] = {};
             }
@@ -92,6 +98,7 @@ class GrabInput {
                                                 : "{frame_controller}frame_controller_right";
             if (error || model != expected || !vr::VRSystem()->IsTrackedDeviceConnected(device)) {
                 latches_[i].reset();
+                bumper_latches_[i].reset();
                 sticks_[i] = {};
                 continue;
             }
@@ -109,6 +116,7 @@ class GrabInput {
                 models->GetComponentState(model, "button_grip", &released, &mode, &neutral);
             if (!valid) {
                 latches_[i].reset();
+                bumper_latches_[i].reset();
                 continue;
             }
             const double angle =
@@ -116,6 +124,18 @@ class GrabInput {
                                            from_vr(current.mTrackingToComponentRenderModel));
             const auto grip = latches_[i].update(angle);
             result[i] = {true, grip.held, grip.pressed, device};
+
+            vr::RenderModel_ComponentState_t current_bumper{}, neutral_bumper{};
+            if (models->GetComponentStateForDevicePath(model, "bumper", hands_[i], &mode,
+                                                       &current_bumper) &&
+                models->GetComponentState(model, "bumper", &released, &mode, &neutral_bumper)) {
+                const double b_angle =
+                    component_rotation_degrees(from_vr(neutral_bumper.mTrackingToComponentRenderModel),
+                                               from_vr(current_bumper.mTrackingToComponentRenderModel));
+                const auto b_state = bumper_latches_[i].update(b_angle);
+                result[i].bumper_pressed = b_state.pressed;
+                result[i].bumper_held = b_state.held;
+            }
             if (grip.held) {
                 auto& stick = sticks_[i];
                 if (!stick.attempted) {
@@ -155,6 +175,7 @@ class GrabInput {
     std::array<Stick, 2> sticks_{};
     std::array<vr::VRInputValueHandle_t, 2> hands_{};
     std::array<GripLatch, 2> latches_{};
+    std::array<GripLatch, 2> bumper_latches_{GripLatch{0.7, 0.35}, GripLatch{0.7, 0.35}};
     bool ready_{};
     std::array<vr::TrackedDeviceIndex_t, 2> devices_{
         {vr::k_unTrackedDeviceIndexInvalid, vr::k_unTrackedDeviceIndexInvalid}};
@@ -576,6 +597,14 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                 stop_drag();
                 app.cancel();
             }
+            if (event.eventType == vr::VREvent_ButtonPress && app.bumper_shift_enabled()) {
+                if (event.data.controller.button == vr::k_EButton_ApplicationMenu) {
+                    app.toggle_shift_lock();
+                    if (app.haptics_enabled()) {
+                        haptics.send(event.trackedDeviceIndex, KeyFeedback::Press);
+                    }
+                }
+            }
         }
         while (vr::VROverlay()->PollNextOverlayEvent(panel.handle(), &event, sizeof(event))) {
             // Recheck before every pointer event, not just once per batch. A
@@ -615,6 +644,12 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                 break;
             }
             case vr::VREvent_MouseButtonDown:
+                if (event.data.mouse.button == vr::VRMouseButton_Right && app.bumper_shift_enabled()) {
+                    app.toggle_shift_lock();
+                    if (controller && app.haptics_enabled()) {
+                        feedback.press(pointer, device);
+                    }
+                }
                 if (event.data.mouse.button == vr::VRMouseButton_Left && !drag.active()) {
                     // Grabbing cannot also type if grip and trigger arrive together.
                     const bool grabbing = std::any_of(grips.begin(), grips.end(), [&](const auto& grip) {
@@ -741,6 +776,16 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                     panel.hide_hands();
                     app.set_dragging(true);
                     break;
+                }
+            }
+        }
+        if (visible && app.bumper_shift_enabled()) {
+            for (const auto& grip : grips) {
+                if (grip.active && grip.bumper_pressed) {
+                    app.toggle_shift_lock();
+                    if (app.haptics_enabled()) {
+                        haptics.send(grip.device, KeyFeedback::Press);
+                    }
                 }
             }
         }
