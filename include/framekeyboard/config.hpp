@@ -47,6 +47,7 @@ struct Selection {
     std::string capture_save_dir{"~/Videos/Recordings"};
     bool capture_audio{true};
     bool bumper_shift_enabled{true};
+    bool world_float_enabled{false};
 };
 struct Favorite {
     std::string id, name;

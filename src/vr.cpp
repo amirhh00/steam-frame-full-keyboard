@@ -416,6 +416,19 @@ class VrPanel {
             overlay->HideOverlay(handle_right_);
         }
     }
+    void set_world_float(bool floating) {
+        auto* overlay = vr::VROverlay();
+        if (!overlay || !handle_) {
+            return;
+        }
+        overlay->SetOverlayFlag(handle_, vr::VROverlayFlags_VisibleInDashboard, !floating);
+        overlay->SetOverlayFlag(handle_, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, floating);
+        for (auto h : {handle_left_, handle_right_}) {
+            if (h) {
+                overlay->SetOverlayFlag(h, vr::VROverlayFlags_VisibleInDashboard, !floating);
+            }
+        }
+    }
     vr::VROverlayHandle_t handle() const { return handle_; }
 
   private:
@@ -431,6 +444,8 @@ int run_vr(App& app, VrInstance& instance, double duration) {
     app.set_interaction_active(false);
     VrPanel panel;
     panel.connect();
+    bool last_world_float = app.world_float();
+    panel.set_world_float(last_world_float);
     VrHaptics haptics;
     auto manifest = fs::canonical("/proc/self/exe").parent_path().parent_path() /
                     "share/framekeyboard/vr/actions.json";
@@ -568,8 +583,15 @@ int run_vr(App& app, VrInstance& instance, double duration) {
             app.summon();
             show_pending = true;
         }
+        if (app.world_float() != last_world_float) {
+            last_world_float = app.world_float();
+            panel.set_world_float(last_world_float);
+            if (!last_world_float && !vr::VROverlay()->IsDashboardVisible()) {
+                hide_panel();
+            }
+        }
         const bool dashboard_visible = vr::VROverlay()->IsDashboardVisible();
-        if (!dashboard_visible) {
+        if (!dashboard_visible && !app.world_float()) {
             hide_panel();
         }
         // Hidden panels cannot be grabbed. Do not query both render models in
@@ -594,8 +616,10 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                 dashboard_anchor = {};
             }
             if (event.eventType == vr::VREvent_InputFocusChanged) {
-                stop_drag();
-                app.cancel();
+                if (!app.world_float()) {
+                    stop_drag();
+                    app.cancel();
+                }
             }
             if (event.eventType == vr::VREvent_ButtonPress && app.bumper_shift_enabled()) {
                 if (event.data.controller.button == vr::k_EButton_ApplicationMenu) {
@@ -609,7 +633,7 @@ int run_vr(App& app, VrInstance& instance, double duration) {
         while (vr::VROverlay()->PollNextOverlayEvent(panel.handle(), &event, sizeof(event))) {
             // Recheck before every pointer event, not just once per batch. A
             // closing dashboard must not deliver queued clicks to a local app.
-            if (!vr::VROverlay()->IsDashboardVisible()) {
+            if (!vr::VROverlay()->IsDashboardVisible() && !app.world_float()) {
                 hide_panel();
             }
             if (event.eventType == vr::VREvent_OverlayClosed) {
@@ -685,9 +709,11 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                 break;
             case vr::VREvent_OverlayHidden:
             case vr::VREvent_Modal_Cancel:
-                hovered_devices.fill(false);
-                stop_drag();
-                app.cancel();
+                if (!app.world_float()) {
+                    hovered_devices.fill(false);
+                    stop_drag();
+                    app.cancel();
+                }
                 break;
             case vr::VREvent_OverlayClosed:
                 done = true;
@@ -954,7 +980,8 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                 stop_drag();
             }
         }
-        if (dashboard_visible && (visible || now >= next_tracking_check)) {
+        if ((dashboard_visible || (app.world_float() && recenter_pending)) &&
+            (visible || now >= next_tracking_check)) {
             Transform head{};
             if (!panel.read_head(head)) {
                 if (recenter_pending && !waiting_for_tracking) {
@@ -1022,7 +1049,7 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                 // Read actual compositor visibility rather than trusting our cached flag.
                 // Another UI can hide an overlay without destroying its owner process.
                 const bool compositor_visible = vr::VROverlay()->IsOverlayVisible(panel.handle());
-                if (placement.ready() && vr::VROverlay()->IsDashboardVisible() &&
+                if (placement.ready() && (vr::VROverlay()->IsDashboardVisible() || app.world_float()) &&
                     (show_pending || !visible || !compositor_visible)) {
                     app.paint(now);
                     panel.submit(app.renderer);
@@ -1039,7 +1066,7 @@ int run_vr(App& app, VrInstance& instance, double duration) {
             place_panel(now);
         }
         // Repeat and text commits share the same gate as pointer presses.
-        if (!vr::VROverlay()->IsDashboardVisible()) {
+        if (!vr::VROverlay()->IsDashboardVisible() && !app.world_float()) {
             hide_panel();
         }
         const bool repaint = app.tick(now);

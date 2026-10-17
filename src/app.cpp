@@ -309,6 +309,7 @@ App::App(const Options& options, KeySink& sink)
     dictation_ = std::make_unique<Dictation>(std::move(helper), std::move(model));
     capture_ = std::make_unique<VideoCapture>();
     load_clipboard_history();
+    world_float_ = settings_.active.world_float_enabled;
     // A saved language mismatch must leave Settings reachable, not abort launch.
     refresh_typing();
 }
@@ -330,15 +331,19 @@ std::vector<Control> App::controls() const {
         {"size-larger", "Larger keyboard", {228, 12, 60, 42}, false, Icon::ScaleUp},
         {"close", "Close", {1522, 12, 60, 42}, false, Icon::Close}};
     if (!settings_open_) {
+        double next_x = 298.0;
         if (voice_enabled()) {
             const bool dictating = dictation_ && dictation_->active();
-            result.push_back({"dictate", "Dictate", {298, 12, 60, 42}, dictating, Icon::Dictate});
+            result.push_back({"dictate", "Dictate", {next_x, 12, 60, 42}, dictating, Icon::Dictate});
+            next_x += 70.0;
         }
         if (capture_enabled()) {
             const bool capturing = capture_ && capture_->active();
-            const double cap_x = voice_enabled() ? 368.0 : 298.0;
-            result.push_back({"capture", "Capture", {cap_x, 12, 60, 42}, capturing, Icon::Capture});
+            result.push_back({"capture", "Capture", {next_x, 12, 60, 42}, capturing, Icon::Capture});
+            next_x += 70.0;
         }
+        result.push_back(
+            {"world-float", "Float in world", {next_x, 12, 60, 42}, world_float_, Icon::Pin});
         if (japanese()) {
             result.push_back({"ime-toggle", japanese_latin_ ? "A / あ" : "あ / A", {610, 12, 115, 42}});
             if (!japanese_latin_) {
@@ -505,8 +510,14 @@ std::vector<Control> App::controls() const {
                 std::string(pending_.bumper_shift_enabled ? "Enabled" : "Disabled"),
             352);
 
-        result.push_back({"apply", "Apply and save", {350, 415, 280, 54}});
-        result.push_back({"hands-defaults", "Reset VR defaults", {650, 415, 280, 54}});
+        row("world-float-opt",
+            "Float in world: " + std::string(pending_.world_float_enabled
+                                                 ? "Enabled (stays open outside dashboard)"
+                                                 : "Disabled (dashboard only)"),
+            400);
+
+        result.push_back({"apply", "Apply and save", {350, 462, 280, 54}});
+        result.push_back({"hands-defaults", "Reset VR defaults", {650, 462, 280, 54}});
     } else if (settings_tab_ == 2) {
         auto row = [&](const std::string& kind, const std::string& name, double y) {
             result.push_back({kind + "-prev", "<", {40, y, 65, 52}});
@@ -1003,6 +1014,7 @@ void App::apply(Selection selection) {
     settings_.active = std::move(selection);
     keymap_ = std::move(keymap);
     pending_ = settings_.active;
+    world_float_ = settings_.active.world_float_enabled;
     if (model_changed || !dictation_) {
         if (dictation_) {
             dictation_->cancel();
@@ -1752,10 +1764,16 @@ void App::action(const std::string& id) {
         pending_.proximity_grab_enabled = true;
         pending_.horizon_lock_enabled = true;
         pending_.bumper_shift_enabled = true;
+        pending_.world_float_enabled = false;
         status_ = "VR & hand options reset to defaults";
         dirty = true;
     } else if (id == "bumper-shift-prev" || id == "bumper-shift-next") {
         pending_.bumper_shift_enabled = !pending_.bumper_shift_enabled;
+        dirty = true;
+    } else if (id == "world-float") {
+        toggle_world_float();
+    } else if (id == "world-float-opt-prev" || id == "world-float-opt-next") {
+        pending_.world_float_enabled = !pending_.world_float_enabled;
         dirty = true;
     } else if (id == "capture-opt-prev" || id == "capture-opt-next") {
         pending_.capture_enabled = !pending_.capture_enabled;
@@ -1847,6 +1865,12 @@ bool App::take_recenter() {
 void App::toggle_shift_lock() {
     const bool locked = keyboard_.toggle_shift_lock();
     status_ = locked ? "Shift Lock: ON" : "Shift Lock: OFF";
+    dirty = true;
+}
+void App::toggle_world_float() {
+    world_float_ = !world_float_;
+    status_ = world_float_ ? "Floating in world: ON (stays open outside dashboard)"
+                           : "Floating in world: OFF (dashboard only)";
     dirty = true;
 }
 } // namespace framekeyboard

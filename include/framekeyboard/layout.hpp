@@ -27,7 +27,8 @@ enum class Icon {
     SteamFrame,
     SteamOS,
     Dictate,
-    Capture
+    Capture,
+    Pin
 };
 
 enum class ActionKind { Key, Shortcut };

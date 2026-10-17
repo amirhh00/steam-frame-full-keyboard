@@ -198,6 +198,14 @@ void draw_icon(cairo_t* cr, Icon icon, Rect bounds, Color color, double size = 2
         cairo_stroke(cr);
         cairo_arc(cr, -2.2, 0, 2.2, 0, 2 * pi);
         break;
+    case Icon::Pin:
+        cairo_arc(cr, 0, -6.5, 4.0, 0, 2 * pi);
+        line(-3, -2, 3, -2);
+        line(-5.5, 3, 5.5, 3);
+        line(-3, -2, -5.5, 3);
+        line(3, -2, 5.5, 3);
+        line(0, 3, 0, 9);
+        break;
     case Icon::None:
         break;
     }

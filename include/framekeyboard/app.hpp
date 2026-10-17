@@ -93,6 +93,9 @@ class App {
     bool bumper_shift_enabled() const { return settings_.active.bumper_shift_enabled; }
     void toggle_shift_lock();
     bool shift_locked() const { return keyboard_.shift_locked(); }
+    bool world_float() const { return world_float_; }
+    void set_world_float(bool float_in_world) { world_float_ = float_in_world; }
+    void toggle_world_float();
 
   private:
     std::vector<Control> controls() const;
@@ -152,6 +155,7 @@ class App {
     std::map<unsigned, double> capture_down_time_;
     std::set<unsigned> capture_long_pressed_;
     double last_capture_tick_{0.0};
+    bool world_float_{false};
 };
 
 double monotonic_seconds();
