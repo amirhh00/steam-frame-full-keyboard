@@ -329,6 +329,7 @@ std::vector<Control> App::controls() const {
         {"recenter", "Recenter", {88, 12, 60, 42}, false, Icon::Recenter},
         {"size-smaller", "Smaller keyboard", {158, 12, 60, 42}, false, Icon::ScaleDown},
         {"size-larger", "Larger keyboard", {228, 12, 60, 42}, false, Icon::ScaleUp},
+        {"world-float", "Float in world", {1452, 12, 60, 42}, world_float_, Icon::Pin},
         {"close", "Close", {1522, 12, 60, 42}, false, Icon::Close}};
     if (!settings_open_) {
         double next_x = 298.0;
@@ -342,8 +343,6 @@ std::vector<Control> App::controls() const {
             result.push_back({"capture", "Capture", {next_x, 12, 60, 42}, capturing, Icon::Capture});
             next_x += 70.0;
         }
-        result.push_back(
-            {"world-float", "Float in world", {next_x, 12, 60, 42}, world_float_, Icon::Pin});
         if (japanese()) {
             result.push_back({"ime-toggle", japanese_latin_ ? "A / あ" : "あ / A", {610, 12, 115, 42}});
             if (!japanese_latin_) {
