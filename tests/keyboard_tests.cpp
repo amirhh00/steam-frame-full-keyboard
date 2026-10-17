@@ -281,7 +281,7 @@ void profile_tests(const fk::Profiles& defaults) {
                 saved.active.speech_model == "ggml-small.en.bin" && saved.active.touch_typing_enabled &&
                 saved.active.proximity_grab_enabled && saved.active.haptics_enabled &&
                 saved.active.horizon_lock_enabled && saved.active.bumper_shift_enabled &&
-                !saved.active.world_float_enabled,
+                !saved.active.world_float_enabled && saved.active.world_float_mode == "dynamic",
             "default feature options populated");
     fk::Selection custom_sel;
     custom_sel.layout = "en-us-full";
@@ -299,6 +299,7 @@ void profile_tests(const fk::Profiles& defaults) {
     custom_sel.horizon_lock_enabled = false;
     custom_sel.bumper_shift_enabled = false;
     custom_sel.world_float_enabled = true;
+    custom_sel.world_float_mode = "passive";
     fk::save_selection(directory.path, custom_sel);
     saved = fk::load_settings(directory.path, errors);
     require(!saved.active.voice_enabled && saved.active.speech_model == "ggml-tiny.en.bin" &&
@@ -306,7 +307,8 @@ void profile_tests(const fk::Profiles& defaults) {
                 saved.active.hand_distance_cm == 15 && saved.active.hand_pitch_deg == 30 &&
                 !saved.active.touch_typing_enabled && !saved.active.proximity_grab_enabled &&
                 !saved.active.haptics_enabled && !saved.active.horizon_lock_enabled &&
-                !saved.active.bumper_shift_enabled && saved.active.world_float_enabled,
+                !saved.active.bumper_shift_enabled && saved.active.world_float_enabled &&
+                saved.active.world_float_mode == "passive",
             "custom feature options saved and reloaded");
     std::ifstream file(directory.path / "config.json");
     const std::string content((std::istreambuf_iterator<char>(file)), {});
@@ -398,7 +400,8 @@ void app_tests() {
     click_control("proximity-grab-next");  // Toggles proximity_grab_enabled off
     click_control("horizon-lock-next");    // Toggles horizon_lock_enabled off
     click_control("bumper-shift-next");    // Toggles bumper_shift_enabled off
-    click_control("world-float-opt-next"); // Toggles world_float_enabled on
+    click_control("world-float-opt-next");  // Toggles world_float_enabled on
+    click_control("world-float-mode-next"); // Cycles to "passive"
     // Test Capture Tab:
     click_control("settings-tab-capture");
     click_control("capture-opt-next");      // Toggles capture_enabled off
@@ -418,6 +421,7 @@ void app_tests() {
     require(!app.horizon_lock_enabled(), "horizon lock disabled after apply");
     require(!app.bumper_shift_enabled(), "bumper shift disabled after apply");
     require(app.world_float(), "world float enabled after apply");
+    require(app.world_float_mode() == "passive", "world float mode updated after apply");
     require(!app.capture_enabled(), "capture disabled after apply");
     require(app.capture_quality() == "1080p Standard", "capture quality updated after apply");
     require(app.capture_save_dir() == "~/Videos", "capture save dir updated after apply");
@@ -445,7 +449,8 @@ void app_tests() {
     require(app.hand_enabled() && std::abs(app.hand_distance_meters() - 0.12) < 0.001 &&
                 app.hand_pitch_degrees() == 25 && app.touch_typing_enabled() &&
                 app.proximity_grab_enabled() && app.horizon_lock_enabled() &&
-                app.bumper_shift_enabled() && !app.world_float(),
+                app.bumper_shift_enabled() && !app.world_float() &&
+                app.world_float_mode() == "dynamic",
             "VR & hand defaults restored");
 
     bool has_world_float = false;

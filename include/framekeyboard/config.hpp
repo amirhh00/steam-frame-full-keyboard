@@ -48,6 +48,7 @@ struct Selection {
     bool capture_audio{true};
     bool bumper_shift_enabled{true};
     bool world_float_enabled{false};
+    std::string world_float_mode{"dynamic"};
 };
 struct Favorite {
     std::string id, name;

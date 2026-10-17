@@ -96,6 +96,7 @@ class App {
     bool world_float() const { return world_float_; }
     void set_world_float(bool float_in_world) { world_float_ = float_in_world; }
     void toggle_world_float();
+    const std::string& world_float_mode() const { return settings_.active.world_float_mode; }
 
   private:
     std::vector<Control> controls() const;

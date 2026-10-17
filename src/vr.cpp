@@ -422,11 +422,21 @@ class VrPanel {
             return;
         }
         overlay->SetOverlayFlag(handle_, vr::VROverlayFlags_VisibleInDashboard, !floating);
-        overlay->SetOverlayFlag(handle_, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, floating);
         for (auto h : {handle_left_, handle_right_}) {
             if (h) {
                 overlay->SetOverlayFlag(h, vr::VROverlayFlags_VisibleInDashboard, !floating);
             }
+        }
+    }
+    void set_overlay_interactive(bool interactive) {
+        auto* overlay = vr::VROverlay();
+        if (!overlay || !handle_) {
+            return;
+        }
+        if (!interactive_reported_ || *interactive_reported_ != interactive) {
+            overlay->SetOverlayFlag(handle_, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,
+                                    interactive);
+            interactive_reported_ = interactive;
         }
     }
     vr::VROverlayHandle_t handle() const { return handle_; }
@@ -438,6 +448,7 @@ class VrPanel {
     VulkanContext vulkan_;
     PanelTexture texture_;
     std::optional<bool> reported_native_;
+    std::optional<bool> interactive_reported_;
 };
 } // namespace
 int run_vr(App& app, VrInstance& instance, double duration) {
@@ -446,6 +457,9 @@ int run_vr(App& app, VrInstance& instance, double duration) {
     panel.connect();
     bool last_world_float = app.world_float();
     panel.set_world_float(last_world_float);
+    bool dynamic_interactive = false;
+    bool last_interactive = false;
+    double last_aim_time = 0.0;
     VrHaptics haptics;
     auto manifest = fs::canonical("/proc/self/exe").parent_path().parent_path() /
                     "share/framekeyboard/vr/actions.json";
@@ -557,6 +571,9 @@ int run_vr(App& app, VrInstance& instance, double duration) {
             check(vr::VROverlay()->HideOverlay(panel.handle()), "Hide keyboard");
             visible = false;
         }
+        panel.set_overlay_interactive(false);
+        last_interactive = false;
+        dynamic_interactive = false;
     };
     auto place_panel = [&](double now) {
         const auto aligned = app.horizon_lock_enabled()
@@ -594,6 +611,123 @@ int run_vr(App& app, VrInstance& instance, double duration) {
         if (!dashboard_visible && !app.world_float()) {
             hide_panel();
         }
+
+        bool target_interactive = false;
+        if (dashboard_visible) {
+            target_interactive = true;
+        } else if (app.world_float() && visible) {
+            const auto& mode = app.world_float_mode();
+            if (mode == "always") {
+                target_interactive = true;
+            } else if (mode == "passive" || mode == "touch") {
+                target_interactive = false;
+            } else { // "dynamic"
+                bool aiming = drag.active();
+                if (!aiming) {
+                    for (const auto& [pointer, dev] : pointer_devices) {
+                        if (app.pointer_pressed(pointer)) {
+                            aiming = true;
+                            break;
+                        }
+                    }
+                }
+                if (!aiming) {
+                    for (const auto& [dev, drum] : drumsticks) {
+                        if (drum.pressed) {
+                            aiming = true;
+                            break;
+                        }
+                    }
+                }
+                if (!aiming && displayed.ready()) {
+                    const auto panel_t = displayed.transform();
+                    const double pw = displayed.width();
+                    const double ph = pw * (static_cast<double>(panel_height) / panel_width);
+
+                    const std::array<double, 3> p_right = {panel_t[0][0], panel_t[1][0], panel_t[2][0]};
+                    const std::array<double, 3> p_up = {panel_t[0][1], panel_t[1][1], panel_t[2][1]};
+                    const std::array<double, 3> p_norm = {panel_t[0][2], panel_t[1][2], panel_t[2][2]};
+                    const std::array<double, 3> p_cent = {panel_t[0][3], panel_t[1][3], panel_t[2][3]};
+
+                    for (vr::TrackedDeviceIndex_t device = 0; device < vr::k_unMaxTrackedDeviceCount;
+                         ++device) {
+                        if (vr::VRSystem()->GetTrackedDeviceClass(device) !=
+                            vr::TrackedDeviceClass_Controller) {
+                            continue;
+                        }
+                        auto ctrl = read_controller(device);
+                        if (!ctrl) {
+                            continue;
+                        }
+                        const std::array<double, 3> c_pos = {(*ctrl)[0][3], (*ctrl)[1][3], (*ctrl)[2][3]};
+                        const std::array<double, 3> d = {c_pos[0] - p_cent[0], c_pos[1] - p_cent[1],
+                                                         c_pos[2] - p_cent[2]};
+
+                        const double local_orig_x =
+                            d[0] * p_right[0] + d[1] * p_right[1] + d[2] * p_right[2];
+                        const double local_orig_y = d[0] * p_up[0] + d[1] * p_up[1] + d[2] * p_up[2];
+                        const double local_orig_z =
+                            d[0] * p_norm[0] + d[1] * p_norm[1] + d[2] * p_norm[2];
+
+                        // Controller in proximity of keyboard:
+                        if (local_orig_z >= -0.15 && local_orig_z <= 0.40 &&
+                            std::abs(local_orig_x) <= pw * 0.70 && std::abs(local_orig_y) <= ph * 0.80) {
+                            aiming = true;
+                            break;
+                        }
+
+                        // Controller ray direction in world space (controller forward is -Z):
+                        const std::array<double, 3> ray_dir_world = {-(*ctrl)[0][2], -(*ctrl)[1][2],
+                                                                     -(*ctrl)[2][2]};
+
+                        const double dir_norm = ray_dir_world[0] * p_norm[0] +
+                                                ray_dir_world[1] * p_norm[1] +
+                                                ray_dir_world[2] * p_norm[2];
+
+                        if (local_orig_z > 0.0 && dir_norm < -0.05) {
+                            const double t = -local_orig_z / dir_norm;
+                            if (t > 0.0 && t <= 3.5) {
+                                const double dir_right = ray_dir_world[0] * p_right[0] +
+                                                         ray_dir_world[1] * p_right[1] +
+                                                         ray_dir_world[2] * p_right[2];
+                                const double dir_up = ray_dir_world[0] * p_up[0] +
+                                                      ray_dir_world[1] * p_up[1] +
+                                                      ray_dir_world[2] * p_up[2];
+                                const double hit_x = local_orig_x + t * dir_right;
+                                const double hit_y = local_orig_y + t * dir_up;
+                                if (std::abs(hit_x) <= (pw * 0.55) && std::abs(hit_y) <= (ph * 0.60)) {
+                                    aiming = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (aiming) {
+                    last_aim_time = now;
+                    dynamic_interactive = true;
+                } else if (now - last_aim_time > 0.35) {
+                    dynamic_interactive = false;
+                }
+                target_interactive = dynamic_interactive;
+            }
+        } else {
+            target_interactive = false;
+        }
+
+        if (last_interactive && !target_interactive) {
+            hovered_devices.fill(false);
+            for (const auto& [pointer, dev] : pointer_devices) {
+                if (app.pointer_pressed(pointer)) {
+                    app.cancel_pointer(pointer);
+                    feedback.cancel_pointer(pointer);
+                }
+            }
+            pointer_devices.clear();
+        }
+        last_interactive = target_interactive;
+        panel.set_overlay_interactive(target_interactive);
         // Hidden panels cannot be grabbed. Do not query both render models in
         // standby; require a released grip sample again when the panel returns.
         if (!visible) {
@@ -916,8 +1050,10 @@ int run_vr(App& app, VrInstance& instance, double duration) {
                     panel.update_hand(hand_is_left, false);
                 }
 
+                const bool allow_touch =
+                    (dashboard_visible || !app.world_float() || app.world_float_mode() != "passive");
                 const bool on_panel = (px >= 0.0 && px < panel_width && py >= 0.0 && py < panel_height);
-                if (on_panel && app.touch_typing_enabled()) {
+                if (on_panel && app.touch_typing_enabled() && allow_touch) {
                     if (!drum.pressed) {
                         if (local_z <= 0.008 && local_z >= -0.06) {
                             drum.pressed = true;

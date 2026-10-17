@@ -477,46 +477,56 @@ std::vector<Control> App::controls() const {
             result.push_back({kind + "-next", ">", {1495, y, 65, 42}});
         };
         row("hand-opt",
-            "Virtual hand pointer: " + std::string(pending_.hand_enabled ? "Enabled" : "Disabled"), 64);
+            "Virtual hand pointer: " + std::string(pending_.hand_enabled ? "Enabled" : "Disabled"), 56);
 
         row("hand-distance",
             "Hand appearance distance: " + std::to_string(pending_.hand_distance_cm) + " cm" +
                 (pending_.hand_distance_cm == 12 ? " (recommended)" : ""),
-            112);
+            104);
 
         row("hand-pitch",
             "Hand rotation angle: " + std::to_string(pending_.hand_pitch_deg) + "°" +
                 (pending_.hand_pitch_deg == 25 ? " (recommended)" : ""),
-            160);
+            152);
 
         row("touch-typing",
             "Direct touch typing: " +
                 std::string(pending_.touch_typing_enabled ? "Enabled" : "Disabled"),
-            208);
+            200);
 
         row("proximity-grab",
             "Grab without laser: " +
                 std::string(pending_.proximity_grab_enabled ? "Enabled" : "Disabled"),
-            256);
+            248);
 
         row("horizon-lock",
             "Horizon auto-leveling: " +
                 std::string(pending_.horizon_lock_enabled ? "Enabled" : "Disabled"),
-            304);
+            296);
 
         row("bumper-shift",
             "Bumper (L1/R1) Shift toggle: " +
                 std::string(pending_.bumper_shift_enabled ? "Enabled" : "Disabled"),
-            352);
+            344);
 
         row("world-float-opt",
             "Float in world: " + std::string(pending_.world_float_enabled
                                                  ? "Enabled (stays open outside dashboard)"
                                                  : "Disabled (dashboard only)"),
-            400);
+            392);
 
-        result.push_back({"apply", "Apply and save", {350, 462, 280, 54}});
-        result.push_back({"hands-defaults", "Reset VR defaults", {650, 462, 280, 54}});
+        std::string mode_label = "Dynamic (Aim to interact)";
+        if (pending_.world_float_mode == "passive") {
+            mode_label = "Passive (Dashboard laser)";
+        } else if (pending_.world_float_mode == "touch") {
+            mode_label = "Direct touch only";
+        } else if (pending_.world_float_mode == "always") {
+            mode_label = "Always laser (Game locked)";
+        }
+        row("world-float-mode", "In-game interaction: " + mode_label, 440);
+
+        result.push_back({"apply", "Apply and save", {350, 496, 280, 52}});
+        result.push_back({"hands-defaults", "Reset VR defaults", {650, 496, 280, 52}});
     } else if (settings_tab_ == 2) {
         auto row = [&](const std::string& kind, const std::string& name, double y) {
             result.push_back({kind + "-prev", "<", {40, y, 65, 52}});
@@ -1764,6 +1774,7 @@ void App::action(const std::string& id) {
         pending_.horizon_lock_enabled = true;
         pending_.bumper_shift_enabled = true;
         pending_.world_float_enabled = false;
+        pending_.world_float_mode = "dynamic";
         status_ = "VR & hand options reset to defaults";
         dirty = true;
     } else if (id == "bumper-shift-prev" || id == "bumper-shift-next") {
@@ -1773,6 +1784,18 @@ void App::action(const std::string& id) {
         toggle_world_float();
     } else if (id == "world-float-opt-prev" || id == "world-float-opt-next") {
         pending_.world_float_enabled = !pending_.world_float_enabled;
+        dirty = true;
+    } else if (id == "world-float-mode-prev" || id == "world-float-mode-next") {
+        const std::vector<std::string> modes = {"dynamic", "passive", "touch", "always"};
+        auto it = std::find(modes.begin(), modes.end(), pending_.world_float_mode);
+        std::size_t idx =
+            (it == modes.end()) ? 0 : static_cast<std::size_t>(std::distance(modes.begin(), it));
+        if (id.ends_with("next")) {
+            idx = (idx + 1) % modes.size();
+        } else {
+            idx = (idx + modes.size() - 1) % modes.size();
+        }
+        pending_.world_float_mode = modes[idx];
         dirty = true;
     } else if (id == "capture-opt-prev" || id == "capture-opt-next") {
         pending_.capture_enabled = !pending_.capture_enabled;
@@ -1868,7 +1891,15 @@ void App::toggle_shift_lock() {
 }
 void App::toggle_world_float() {
     world_float_ = !world_float_;
-    status_ = world_float_ ? "Floating in world: ON (stays open outside dashboard)"
+    std::string mode_label = "Dynamic";
+    if (settings_.active.world_float_mode == "passive") {
+        mode_label = "Passive";
+    } else if (settings_.active.world_float_mode == "touch") {
+        mode_label = "Direct touch";
+    } else if (settings_.active.world_float_mode == "always") {
+        mode_label = "Always laser";
+    }
+    status_ = world_float_ ? ("Floating in world: ON (" + mode_label + ")")
                            : "Floating in world: OFF (dashboard only)";
     dirty = true;
 }
