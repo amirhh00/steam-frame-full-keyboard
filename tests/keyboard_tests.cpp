@@ -470,6 +470,37 @@ void app_tests() {
     }
     require(has_capture, "capture button restored in toolbar");
 
+    // Verify that App::cancel() and summon() do not terminate ongoing video recording
+    TemporaryDirectory cap_temp;
+    fk::Options cap_opts;
+    cap_opts.config_dir = cap_temp.path;
+    fk::App cap_app(cap_opts, sink);
+    require(!cap_app.capture_active(), "capture starts inactive");
+    auto click_cap_control = [&](const std::string& id) {
+        for (const auto& control : cap_app.view().controls) {
+            if (control.id == id) {
+                const double x = control.bounds.x + control.bounds.width / 2;
+                const double y = control.bounds.y + control.bounds.height / 2;
+                cap_app.down(0, x, y, 4);
+                cap_app.up(0, x, y);
+                return;
+            }
+        }
+        throw std::runtime_error("missing control " + id);
+    };
+    const std::string cam = fk::VideoCapture::detect_camera_device();
+    if (fk::VideoCapture::ffmpeg_available() && ::access(cam.c_str(), R_OK) == 0) {
+        click_cap_control("capture");
+        if (cap_app.capture_active()) {
+            cap_app.cancel(); // Simulates dashboard close / focus change
+            require(cap_app.capture_active(), "App::cancel must not stop ongoing camera recording");
+            cap_app.summon(); // Simulates reopening keyboard
+            require(cap_app.capture_active(), "App::summon must retain ongoing camera recording");
+            click_cap_control("capture"); // Stop recording
+            require(!cap_app.capture_active(), "second capture action stops recording");
+        }
+    }
+
     rejects([&] { app.apply({"missing", "en-us", "graphite"}); }, "invalid selection rejected");
     require(app.selection().theme == "midnight", "failed apply retains prior selection");
 }

@@ -262,7 +262,8 @@ void VideoCapture::close_child(bool force_kill) {
 
 void VideoCapture::cancel() {
     if (active()) {
-        close_child(true);
+        std::string saved;
+        stop(&saved, nullptr);
     }
 }
 

@@ -43,6 +43,7 @@ class InputGate : public KeySink {
 class App {
   public:
     App(const Options& options, KeySink& sink);
+    ~App();
     PanelView view() const;
     // True only for a newly accepted keyboard key, so VR can provide haptics.
     bool down(unsigned pointer, double x, double y, double now);

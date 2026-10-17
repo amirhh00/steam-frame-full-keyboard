@@ -312,6 +312,12 @@ App::App(const Options& options, KeySink& sink)
     // A saved language mismatch must leave Settings reachable, not abort launch.
     refresh_typing();
 }
+App::~App() {
+    if (capture_ && capture_->active()) {
+        std::string saved;
+        capture_->stop(&saved);
+    }
+}
 std::vector<Control> App::controls() const {
     std::vector<Control> result = {
         {"settings",
@@ -808,10 +814,6 @@ void App::cancel(bool discard_composition) {
     paste_long_pressed_.clear();
     capture_down_time_.clear();
     capture_long_pressed_.clear();
-    if (capture_ && capture_->active()) {
-        std::string saved;
-        capture_->stop(&saved);
-    }
     clipboard_open_ = false;
     if (dictation_) {
         dictation_->cancel();
@@ -973,7 +975,16 @@ void App::summon() {
     settings_open_ = false;
     placement_actions_.clear();
     recenter_ = true;
-    status_.clear();
+    if (capture_ && capture_->active()) {
+        const int secs = static_cast<int>(capture_->duration(monotonic_seconds()));
+        const int mins = secs / 60;
+        const int rem_secs = secs % 60;
+        char dur_buf[32];
+        std::snprintf(dur_buf, sizeof(dur_buf), "[%02d:%02d]", mins, rem_secs);
+        status_ = "Recording camera " + std::string(dur_buf) + " · Tap camera icon to stop";
+    } else {
+        status_.clear();
+    }
 }
 std::vector<PlacementAction> App::take_placement_actions() {
     std::vector<PlacementAction> result;
