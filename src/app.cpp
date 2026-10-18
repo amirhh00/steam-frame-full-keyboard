@@ -310,6 +310,7 @@ App::App(const Options& options, KeySink& sink)
     capture_ = std::make_unique<VideoCapture>();
     load_clipboard_history();
     world_float_ = settings_.active.world_float_enabled;
+    suggestion_engine_ = std::make_unique<SuggestionEngine>(options_.data_dir, options_.config_dir);
     // A saved language mismatch must leave Settings reachable, not abort launch.
     refresh_typing();
 }
@@ -395,6 +396,22 @@ std::vector<Control> App::controls() const {
                     }
                     result.push_back({"cjk-next", "↓", {1290, 148, 55, 42}});
                 }
+            }
+        }
+        if (suggestions_enabled() && !suggestions_.empty() && (!japanese() || japanese_latin_) &&
+            (!cjk_ || cjk_latin_)) {
+            const std::size_t num_sug = std::min<std::size_t>(suggestions_.size(), 4);
+            const double btn_w = 240.0;
+            const double btn_gap = 16.0;
+            const double total_w =
+                static_cast<double>(num_sug) * btn_w + static_cast<double>(num_sug - 1) * btn_gap;
+            const double start_x = (panel_width - total_w) / 2.0;
+            for (std::size_t i = 0; i < num_sug; ++i) {
+                result.push_back(
+                    {"suggestion-" + std::to_string(i),
+                     suggestions_[i],
+                     {start_x + static_cast<double>(i) * (btn_w + btn_gap), 66.0, btn_w, 44.0},
+                     i == 0});
             }
         }
         if (clipboard_open_) {
@@ -529,12 +546,12 @@ std::vector<Control> App::controls() const {
         result.push_back({"hands-defaults", "Reset VR defaults", {650, 496, 280, 52}});
     } else if (settings_tab_ == 2) {
         auto row = [&](const std::string& kind, const std::string& name, double y) {
-            result.push_back({kind + "-prev", "<", {40, y, 65, 52}});
-            result.push_back({kind + "-label", name, {115, y, 1370, 52}});
-            result.push_back({kind + "-next", ">", {1495, y, 65, 52}});
+            result.push_back({kind + "-prev", "<", {40, y, 65, 46}});
+            result.push_back({kind + "-label", name, {115, y, 1370, 46}});
+            result.push_back({kind + "-next", ">", {1495, y, 65, 46}});
         };
         row("voice", "Voice typing: " + std::string(pending_.voice_enabled ? "Enabled" : "Disabled"),
-            80);
+            65);
 
         std::string model_status = " [not found]";
         auto resolved_model =
@@ -543,20 +560,25 @@ std::vector<Control> App::controls() const {
         if (fs::is_regular_file(resolved_model, ec)) {
             model_status = " [installed]";
         }
-        row("speech-model", "Speech model: " + pending_.speech_model + model_status, 150);
+        row("speech-model", "Speech model: " + pending_.speech_model + model_status, 125);
 
         row("clipboard-opt",
             "Clipboard history (hold paste): " +
                 std::string(pending_.clipboard_enabled ? "Enabled" : "Disabled"),
-            220);
+            185);
 
         row("haptics-opt",
             "Controller vibration haptics: " +
                 std::string(pending_.haptics_enabled ? "Enabled" : "Disabled"),
-            290);
+            245);
 
-        result.push_back({"apply", "Apply and save", {350, 400, 280, 56}});
-        result.push_back({"features-defaults", "Reset to defaults", {650, 400, 280, 56}});
+        row("suggestions-opt",
+            "Word suggestions bar: " +
+                std::string(pending_.suggestions_enabled ? "Enabled" : "Disabled"),
+            305);
+
+        result.push_back({"apply", "Apply and save", {350, 385, 280, 52}});
+        result.push_back({"features-defaults", "Reset to defaults", {650, 385, 280, 52}});
     } else {
         auto row = [&](const std::string& kind, const std::string& name, double y) {
             result.push_back({kind + "-prev", "<", {40, y, 65, 46}});
@@ -575,9 +597,9 @@ std::vector<Control> App::controls() const {
         row("capture-save-dir", "Save recordings to: " + pending_.capture_save_dir, 168);
 
         row("capture-game-audio",
-            "Record game audio: " +
-                std::string(pending_.capture_game_audio ? "Enabled (captures game sound)"
-                                                        : "Disabled (no game sound)"),
+            "Record game audio: " + std::string(pending_.capture_game_audio
+                                                    ? "Enabled (captures game sound)"
+                                                    : "Disabled (no game sound)"),
             222);
 
         row("capture-audio",
@@ -750,9 +772,15 @@ bool App::down(unsigned pointer, double x, double y, double now) {
                 if (ime_local) {
                     japanese_key(*key, true, modifiers);
                     cjk_key(*key, true, modifiers);
+                    current_word_.clear();
+                    suggestions_.clear();
+                    trailing_space_inserted_ = false;
                 } else if (cancel_accent) {
                     keymap_->cancel_compose();
                     status_.clear();
+                    current_word_.clear();
+                    suggestions_.clear();
+                    trailing_space_inserted_ = false;
                 } else if (text_local && key->action != "CapsLock" && key->action != "NumLock") {
                     pending_text_ = keymap_->compose(symbol);
                     const auto repeated = pending_text_;
@@ -762,9 +790,11 @@ bool App::down(unsigned pointer, double x, double y, double now) {
                     if (keymap_->composing()) {
                         status_ = "Accent pending";
                     }
+                    handle_typed_text(repeated);
                 } else if (!local) {
                     keymap_->cancel_compose();
                     status_.clear();
+                    handle_key_action(key->action, modifiers);
                 }
             } catch (const std::exception& error) {
                 status_ = error.what();
@@ -853,6 +883,9 @@ void App::cancel(bool discard_composition) {
         if (cjk_) {
             cjk_->cancel();
         }
+        current_word_.clear();
+        suggestions_.clear();
+        trailing_space_inserted_ = false;
     }
     keyboard_.cancel_all();
     pressed_controls_.clear();
@@ -1246,6 +1279,123 @@ bool App::flush_text() {
     status_ = "Text not sent. Release other keys, then press Enter to retry.";
     return false;
 }
+void App::commit_suggestion(const std::string& word) {
+    if (word.empty()) {
+        return;
+    }
+    const std::size_t len = current_word_.size();
+    current_word_.clear();
+    suggestions_.clear();
+    last_inserted_word_ = word;
+
+    if (options_.input != "none") {
+        for (std::size_t i = 0; i < len; ++i) {
+            gate_.send(KEY_BACKSPACE, 1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+            gate_.send(KEY_BACKSPACE, 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+    }
+
+    std::string commit_str = word + " ";
+    if (options_.input == "none") {
+        status_ = "Preview: inserted '" + commit_str + "'";
+    } else if (unicode_mode()) {
+        if (!gate_.commit_text(commit_str)) {
+            type_dictation(commit_str);
+        }
+    } else {
+        type_dictation(commit_str);
+    }
+    trailing_space_inserted_ = true;
+    dirty = true;
+}
+void App::update_suggestions() {
+    if (!suggestion_engine_ || !suggestions_enabled() || current_word_.empty() ||
+        (japanese() && !japanese_latin_) || (cjk_ && !cjk_latin_)) {
+        suggestions_.clear();
+        return;
+    }
+    suggestions_ = suggestion_engine_->suggest(current_word_, 4);
+}
+void App::handle_typed_text(const std::string& text) {
+    if (text.empty() || !suggestions_enabled()) {
+        return;
+    }
+    if (text.size() == 1) {
+        const char c = text[0];
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '\'') {
+            trailing_space_inserted_ = false;
+            current_word_.push_back(c);
+            update_suggestions();
+            return;
+        }
+        if (c == ' ') {
+            trailing_space_inserted_ = false;
+            current_word_.clear();
+            suggestions_.clear();
+            return;
+        }
+        if (trailing_space_inserted_ &&
+            (c == '.' || c == ',' || c == '!' || c == '?' || c == ':' || c == ';')) {
+            trailing_space_inserted_ = false;
+            if (options_.input != "none") {
+                gate_.send(KEY_BACKSPACE, 1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                gate_.send(KEY_BACKSPACE, 0);
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                if (unicode_mode()) {
+                    gate_.commit_text(text);
+                } else {
+                    type_dictation(text);
+                }
+            }
+            current_word_.clear();
+            suggestions_.clear();
+            return;
+        }
+    }
+    trailing_space_inserted_ = false;
+    current_word_.clear();
+    suggestions_.clear();
+}
+void App::handle_key_action(const std::string& action, const std::set<int>& mods) {
+    if (action == "Backspace") {
+        if (trailing_space_inserted_) {
+            trailing_space_inserted_ = false;
+            current_word_ = last_inserted_word_;
+            last_inserted_word_.clear();
+            update_suggestions();
+        } else if (!current_word_.empty()) {
+            current_word_.pop_back();
+            update_suggestions();
+        } else {
+            suggestions_.clear();
+        }
+        return;
+    }
+    if (action == "Space" || action == "Enter" || action == "Tab" || action == "Escape") {
+        trailing_space_inserted_ = false;
+        current_word_.clear();
+        suggestions_.clear();
+        return;
+    }
+    if (!unicode_mode() && action.size() >= 4 && action.starts_with("Key")) {
+        char c = action[3];
+        const bool shift = mods.contains(key_code("ShiftLeft")) ||
+                           mods.contains(key_code("ShiftRight")) || keyboard_.caps();
+        if (!shift) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        trailing_space_inserted_ = false;
+        current_word_.push_back(c);
+        update_suggestions();
+        return;
+    }
+    trailing_space_inserted_ = false;
+    current_word_.clear();
+    suggestions_.clear();
+}
 void App::type_dictation(const std::string& text) {
     if (options_.input == "none" || !gate_.enabled) {
         return;
@@ -1586,6 +1736,14 @@ void App::action(const std::string& id) {
         }
         return;
     }
+    if (id.starts_with("suggestion-") && id.size() > 11 &&
+        std::isdigit(static_cast<unsigned char>(id[11]))) {
+        const std::size_t idx = std::stoul(id.substr(11));
+        if (idx < suggestions_.size()) {
+            commit_suggestion(suggestions_[idx]);
+        }
+        return;
+    }
     if (id == "dictate") {
         if (!voice_enabled()) {
             return;
@@ -1633,8 +1791,8 @@ void App::action(const std::string& id) {
         } else {
             std::string err;
             if (capture_->start(settings_.active.capture_save_dir, settings_.active.capture_quality,
-                                settings_.active.capture_game_audio, settings_.active.capture_audio,
-                                "", &err)) {
+                                settings_.active.capture_game_audio, settings_.active.capture_audio, "",
+                                &err)) {
                 last_capture_tick_ = monotonic_seconds();
                 status_ = "Recording camera [00:00] · Tap camera icon to stop";
             } else {
@@ -1735,6 +1893,9 @@ void App::action(const std::string& id) {
         dirty = true;
     } else if (id == "haptics-opt-prev" || id == "haptics-opt-next") {
         pending_.haptics_enabled = !pending_.haptics_enabled;
+        dirty = true;
+    } else if (id == "suggestions-opt-prev" || id == "suggestions-opt-next") {
+        pending_.suggestions_enabled = !pending_.suggestions_enabled;
         dirty = true;
     } else if (id == "hand-opt-prev" || id == "hand-opt-next") {
         pending_.hand_enabled = !pending_.hand_enabled;
@@ -1864,6 +2025,7 @@ void App::action(const std::string& id) {
         pending_.capture_game_audio = true;
         pending_.capture_audio = true;
         pending_.bumper_shift_enabled = true;
+        pending_.suggestions_enabled = true;
         status_ = "Feature options reset to defaults";
         dirty = true;
     } else if (id == "recenter") {

@@ -7,6 +7,7 @@
 #include "japanese.hpp"
 #include "panel.hpp"
 #include "placement.hpp"
+#include "suggestions.hpp"
 #include <csignal>
 #include <optional>
 
@@ -99,10 +100,15 @@ class App {
     void set_world_float(bool float_in_world) { world_float_ = float_in_world; }
     void toggle_world_float();
     const std::string& world_float_mode() const { return settings_.active.world_float_mode; }
+    bool suggestions_enabled() const { return settings_.active.suggestions_enabled; }
 
   private:
     std::vector<Control> controls() const;
     void action(const std::string& id);
+    void commit_suggestion(const std::string& word);
+    void update_suggestions();
+    void handle_typed_text(const std::string& text);
+    void handle_key_action(const std::string& action, const std::set<int>& mods);
     void refresh_typing();
     bool japanese_key(const Key& key, bool execute, const std::set<int>& mods);
     void commit_japanese();
@@ -159,6 +165,11 @@ class App {
     std::set<unsigned> capture_long_pressed_;
     double last_capture_tick_{0.0};
     bool world_float_{false};
+    std::unique_ptr<SuggestionEngine> suggestion_engine_;
+    std::string current_word_;
+    std::vector<std::string> suggestions_;
+    bool trailing_space_inserted_{false};
+    std::string last_inserted_word_;
 };
 
 double monotonic_seconds();

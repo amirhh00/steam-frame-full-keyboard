@@ -746,6 +746,105 @@ void capture_tests() {
         require(fk::fs::file_size(saved_file) > 0, "saved dual audio file has non-zero size");
     }
 }
+void suggestion_tests() {
+    fk::SuggestionEngine engine("words");
+    require(!engine.empty(), "suggestion engine loaded words");
+    require(engine.size() > 50, "suggestion engine has words list");
+
+    // 1. Prefix completions
+    const auto hel = engine.suggest("hel", 4);
+    require(!hel.empty(), "suggestions for 'hel'");
+    require(std::find(hel.begin(), hel.end(), "help") != hel.end() ||
+                std::find(hel.begin(), hel.end(), "hello") != hel.end(),
+            "hel suggestions include help or hello");
+
+    // 2. Capitalization preservation
+    const auto hel_cap = engine.suggest("Hel", 4);
+    require(!hel_cap.empty() && std::isupper(hel_cap[0][0]),
+            "capitalized input gives capitalized suggestion");
+
+    const auto hel_upper = engine.suggest("HEL", 4);
+    require(!hel_upper.empty() &&
+                (hel_upper[0] == "HELP" || hel_upper[0] == "HELD" || hel_upper[0] == "HELLO"),
+            "uppercase input gives uppercase suggestion");
+
+    // 3. Contraction mapping
+    const auto dont = engine.suggest("dont", 4);
+    require(!dont.empty() && dont[0] == "don't", "dont suggests don't as first candidate");
+
+    const auto im = engine.suggest("im", 4);
+    require(!im.empty() && im[0] == "I'm", "im suggests I'm as first candidate");
+
+    // 4. Typo tolerance
+    const auto typo = engine.suggest("helo", 4);
+    require(std::find(typo.begin(), typo.end(), "hello") != typo.end() ||
+                std::find(typo.begin(), typo.end(), "help") != typo.end(),
+            "typo 'helo' matches hello or help");
+
+    // 5. Test suggestion bar in App
+    Capture sink;
+    fk::Options options;
+    options.mode = "vr";
+    options.input = "none";
+    options.data_dir = "words";
+    fk::App app(options, sink);
+
+    // Initial controls have no suggestions
+    auto ctrls = app.view().controls;
+    require(std::none_of(ctrls.begin(), ctrls.end(),
+                         [](const fk::Control& c) { return c.id.starts_with("suggestion-"); }),
+            "no suggestions initially");
+
+    // Type 'h', 'e', 'l'
+    // Tap KeyH, KeyE, KeyL
+    const auto profiles = fk::load_profiles({}, {});
+    const auto& layout = profiles.layouts.at("en-us-full");
+    // Find bounds for H, E, L
+    auto tap_key = [&](const std::string& action) {
+        for (const auto& k : layout.keys) {
+            if (k.action == action) {
+                // Compute key center
+                // Panel Placement puts keys around x ~ 20 + x * 1.054, y ~ 128.76 + y * 1.054
+                const double x = 20.0 + (k.bounds.x + k.bounds.width / 2.0) * 1.054;
+                const double y = 128.76 + (k.bounds.y + k.bounds.height / 2.0) * 1.054;
+                app.move(1, x, y);
+                app.down(1, x, y, 1.0);
+                app.up(1, x, y);
+                break;
+            }
+        }
+    };
+
+    tap_key("KeyH");
+    tap_key("KeyE");
+    tap_key("KeyL");
+
+    // Check suggestion controls now exist above function keys
+    ctrls = app.view().controls;
+    std::vector<fk::Control> sug_ctrls;
+    for (const auto& c : ctrls) {
+        if (c.id.starts_with("suggestion-")) {
+            sug_ctrls.push_back(c);
+        }
+    }
+    require(!sug_ctrls.empty(), "suggestions appeared above function keys after typing 'hel'");
+    require(sug_ctrls[0].bounds.y == 66.0, "suggestion buttons placed at y=66 above function keys");
+    require(sug_ctrls[0].bounds.height == 44.0, "suggestion button height is 44");
+
+    // Tap the first suggestion
+    const auto first_sug = sug_ctrls[0];
+    const double cx = first_sug.bounds.x + first_sug.bounds.width / 2.0;
+    const double cy = first_sug.bounds.y + first_sug.bounds.height / 2.0;
+    app.move(1, cx, cy);
+    app.down(1, cx, cy, 2.0);
+    app.up(1, cx, cy);
+
+    // Suggestions bar should clear after selection
+    ctrls = app.view().controls;
+    require(std::none_of(ctrls.begin(), ctrls.end(),
+                         [](const fk::Control& c) { return c.id.starts_with("suggestion-"); }),
+            "suggestions cleared after tapping suggestion");
+}
 } // namespace
 int main() {
     try {
@@ -759,6 +858,7 @@ int main() {
         voice_command_and_punctuation_tests();
         clipboard_tests();
         capture_tests();
+        suggestion_tests();
         std::cout << "Key sequences, cancellation, repeat, profiles, persistence, language legends, "
                      "dictation, voice commands, clipboard, capture and rendering passed.\n";
         return 0;
