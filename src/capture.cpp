@@ -1,5 +1,7 @@
 #include "framekeyboard/capture.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -7,7 +9,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <signal.h>
-#include <sys/resource.h>
+#include <sstream>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
@@ -15,10 +17,55 @@
 
 namespace framekeyboard {
 
+static std::string exec_cmd(const std::string& cmd) {
+    char buf[128];
+    std::string result;
+    FILE* pipe = ::popen(cmd.c_str(), "r");
+    if (!pipe) {
+        return "";
+    }
+    while (::fgets(buf, sizeof(buf), pipe) != nullptr) {
+        result += buf;
+    }
+    ::pclose(pipe);
+    while (!result.empty() && (result.back() == '\n' || result.back() == '\r' || result.back() == ' ')) {
+        result.pop_back();
+    }
+    return result;
+}
+
+static void cleanup_pulse_mix() {
+    const std::string out =
+        exec_cmd("pactl list modules short 2>/dev/null | grep fk_record_mix | awk '{print $1}'");
+    std::istringstream iss(out);
+    std::string mod_id;
+    while (iss >> mod_id) {
+        if (!mod_id.empty() && std::all_of(mod_id.begin(), mod_id.end(), ::isdigit)) {
+            std::system(("pactl unload-module " + mod_id + " 2>/dev/null").c_str());
+        }
+    }
+}
+
+static bool setup_pulse_mix() {
+    cleanup_pulse_mix();
+    const std::string sink_id = exec_cmd("pactl load-module module-null-sink sink_name=fk_record_mix "
+                                         "sink_properties=device.description=FKRecordMix "
+                                         "2>/dev/null");
+    if (sink_id.empty()) {
+        return false;
+    }
+    exec_cmd("pactl load-module module-loopback source=@DEFAULT_MONITOR@ sink=fk_record_mix "
+             "latency_msec=20 2>/dev/null");
+    exec_cmd("pactl load-module module-loopback source=default sink=fk_record_mix latency_msec=20 "
+             "2>/dev/null");
+    return true;
+}
+
 VideoCapture::VideoCapture() = default;
 
 VideoCapture::~VideoCapture() {
     cancel();
+    cleanup_pulse_mix();
 }
 
 bool VideoCapture::ffmpeg_available() {
@@ -120,89 +167,41 @@ bool VideoCapture::start(const std::string& save_dir, const std::string& quality
     std::strftime(name_buf, sizeof(name_buf), "Recording_%Y-%m-%d_%H-%M-%S.mp4", &tm_buf);
     const fs::path out_file = dir / name_buf;
 
-    std::vector<std::string> args = {"ffmpeg",
-                                     "-y",
-                                     "-thread_queue_size",
-                                     "1024",
-                                     "-use_wallclock_as_timestamps",
-                                     "1",
-                                     "-f",
-                                     "v4l2",
-                                     "-input_format",
-                                     "rgb24",
-                                     "-video_size",
-                                     "1920x1080",
-                                     "-i",
-                                     video_dev};
+    cleanup_pulse_mix();
 
-    const bool scale_720p = (quality == "720p Performance");
+    std::vector<std::string> args = {"ffmpeg", "-y",          "-f",        "v4l2", "-input_format",
+                                     "rgb24",  "-video_size", "1920x1080", "-i",   video_dev};
 
     if (record_game_audio && record_mic) {
-        args.insert(args.end(), {"-thread_queue_size", "1024", "-f", "pulse", "-i", "@DEFAULT_MONITOR@",
-                                 "-thread_queue_size", "1024", "-f", "pulse", "-i", "default"});
-        if (scale_720p) {
-            args.insert(
-                args.end(),
-                {"-filter_complex",
-                 "[0:v]scale=1280:720[vout];"
-                 "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[amixed];"
-                 "[amixed]aresample=async=1[aout]",
-                 "-map", "[vout]", "-map", "[aout]"});
+        if (setup_pulse_mix()) {
+            args.insert(args.end(), {"-f", "pulse", "-i", "fk_record_mix.monitor"});
         } else {
-            args.insert(
-                args.end(),
-                {"-filter_complex",
-                 "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[amixed];"
-                 "[amixed]aresample=async=1[aout]",
-                 "-map", "0:v", "-map", "[aout]"});
+            args.insert(args.end(), {"-f", "pulse", "-i", "default"});
         }
     } else if (record_game_audio) {
-        args.insert(args.end(),
-                    {"-thread_queue_size", "1024", "-f", "pulse", "-i", "@DEFAULT_MONITOR@"});
-        if (scale_720p) {
-            args.insert(args.end(),
-                        {"-filter_complex", "[0:v]scale=1280:720[vout];[1:a]aresample=async=1[aout]",
-                         "-map", "[vout]", "-map", "[aout]"});
-        } else {
-            args.insert(args.end(), {"-filter_complex", "[1:a]aresample=async=1[aout]", "-map", "0:v",
-                                     "-map", "[aout]"});
-        }
+        args.insert(args.end(), {"-f", "pulse", "-i", "@DEFAULT_MONITOR@"});
     } else if (record_mic) {
-        args.insert(args.end(), {"-thread_queue_size", "1024", "-f", "pulse", "-i", "default"});
-        if (scale_720p) {
-            args.insert(args.end(),
-                        {"-filter_complex", "[0:v]scale=1280:720[vout];[1:a]aresample=async=1[aout]",
-                         "-map", "[vout]", "-map", "[aout]"});
-        } else {
-            args.insert(args.end(), {"-filter_complex", "[1:a]aresample=async=1[aout]", "-map", "0:v",
-                                     "-map", "[aout]"});
-        }
-    } else {
-        if (scale_720p) {
-            args.insert(args.end(), {"-vf", "scale=1280:720", "-map", "0:v", "-an"});
-        } else {
-            args.insert(args.end(), {"-map", "0:v", "-an"});
-        }
+        args.insert(args.end(), {"-f", "pulse", "-i", "default"});
     }
 
-    // Video encoding settings:
-    // Limit libx264 worker threads to 2 and tune zerolatency to avoid saturating ARM CPU cores,
-    // preserving full performance for the VR game and compositor.
-    args.insert(args.end(),
-                {"-c:v", "libx264", "-tune", "zerolatency", "-threads", "2", "-pix_fmt", "yuv420p"});
+    // Video encoding settings - exactly matching the clean, smooth baseline
+    args.insert(args.end(), {"-c:v", "libx264"});
     if (quality == "720p Performance") {
-        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "24"});
+        args.insert(args.end(), {"-vf", "scale=1280:720", "-preset", "ultrafast", "-crf", "24",
+                                 "-pix_fmt", "yuv420p"});
     } else if (quality == "1080p Ultra") {
-        args.insert(args.end(), {"-preset", "veryfast", "-crf", "18"});
+        args.insert(args.end(), {"-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"});
     } else if (quality == "1080p Standard") {
-        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "24"});
+        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p"});
     } else {
         // Default: 1080p High
-        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "20"});
+        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p"});
     }
 
     if (record_game_audio || record_mic) {
         args.insert(args.end(), {"-c:a", "aac", "-b:a", "128k"});
+    } else {
+        args.push_back("-an");
     }
 
     args.push_back(out_file.string());
@@ -217,6 +216,7 @@ bool VideoCapture::start(const std::string& save_dir, const std::string& quality
 
     pid_t child = ::fork();
     if (child < 0) {
+        cleanup_pulse_mix();
         last_error_ = "Failed to fork ffmpeg process";
         if (error) {
             *error = last_error_;
@@ -227,10 +227,6 @@ bool VideoCapture::start(const std::string& save_dir, const std::string& quality
     if (child == 0) {
         // Child process
         ::setsid();
-
-        // Lower process scheduling priority to nice 10 so gamescope compositor and
-        // the active VR game retain higher CPU scheduling precedence.
-        ::setpriority(PRIO_PROCESS, 0, 10);
 
         int devnull = ::open("/dev/null", O_RDONLY);
         if (devnull >= 0) {
@@ -264,6 +260,7 @@ bool VideoCapture::start(const std::string& save_dir, const std::string& quality
 
 bool VideoCapture::stop(std::string* saved_path, std::string* error) {
     if (!active() || pid_ <= 0) {
+        cleanup_pulse_mix();
         if (error) {
             *error = "No active recording to stop";
         }
@@ -291,6 +288,7 @@ bool VideoCapture::stop(std::string* saved_path, std::string* error) {
         ::waitpid(pid_, &status, 0);
     }
 
+    cleanup_pulse_mix();
     pid_ = -1;
     state_ = State::Idle;
 
@@ -321,6 +319,7 @@ void VideoCapture::close_child(bool force_kill) {
         ::waitpid(pid_, &status, 0);
         pid_ = -1;
     }
+    cleanup_pulse_mix();
     state_ = State::Idle;
 }
 
