@@ -397,20 +397,20 @@ void app_tests() {
 
     // Test VR & Hands Tab:
     click_control("settings-tab-hands");
-    click_control("hand-opt-next");        // Toggles hand_enabled off
-    click_control("hand-distance-next");   // Cycles hand distance from 12 to 15
-    click_control("hand-pitch-next");      // Cycles hand pitch from 25 to 30
-    click_control("touch-typing-next");    // Toggles touch_typing_enabled off
-    click_control("proximity-grab-next");  // Toggles proximity_grab_enabled off
-    click_control("horizon-lock-next");    // Toggles horizon_lock_enabled off
-    click_control("bumper-shift-next");    // Toggles bumper_shift_enabled off
+    click_control("hand-opt-next");         // Toggles hand_enabled off
+    click_control("hand-distance-next");    // Cycles hand distance from 12 to 15
+    click_control("hand-pitch-next");       // Cycles hand pitch from 25 to 30
+    click_control("touch-typing-next");     // Toggles touch_typing_enabled off
+    click_control("proximity-grab-next");   // Toggles proximity_grab_enabled off
+    click_control("horizon-lock-next");     // Toggles horizon_lock_enabled off
+    click_control("bumper-shift-next");     // Toggles bumper_shift_enabled off
     click_control("world-float-opt-next");  // Toggles world_float_enabled on
     click_control("world-float-mode-next"); // Cycles to "passive"
     // Test Capture Tab:
     click_control("settings-tab-capture");
-    click_control("capture-opt-next");      // Toggles capture_enabled off
-    click_control("capture-quality-next");  // Cycles to "1080p Standard"
-    click_control("capture-save-dir-next"); // Cycles to "~/Videos"
+    click_control("capture-opt-next");        // Toggles capture_enabled off
+    click_control("capture-quality-next");    // Cycles to "1080p Standard"
+    click_control("capture-save-dir-next");   // Cycles to "~/Videos"
     click_control("capture-game-audio-next"); // Toggles capture_game_audio off
     click_control("capture-audio-next");      // Toggles capture_audio off
     click_control("apply");
@@ -455,8 +455,7 @@ void app_tests() {
     require(app.hand_enabled() && std::abs(app.hand_distance_meters() - 0.12) < 0.001 &&
                 app.hand_pitch_degrees() == 25 && app.touch_typing_enabled() &&
                 app.proximity_grab_enabled() && app.horizon_lock_enabled() &&
-                app.bumper_shift_enabled() && !app.world_float() &&
-                app.world_float_mode() == "dynamic",
+                app.bumper_shift_enabled() && !app.world_float() && app.world_float_mode() == "dynamic",
             "VR & hand defaults restored");
 
     bool has_world_float = false;
@@ -730,6 +729,21 @@ void capture_tests() {
         require(!cap.active(), "capture is idle after stop");
         require(!saved_file.empty() && fk::fs::exists(saved_file), "saved file exists on disk");
         require(fk::fs::file_size(saved_file) > 0, "saved file has non-zero size");
+    }
+
+    // Test dual audio capture (game audio + mic) with 720p scaling
+    const bool started_dual =
+        cap.start(save_dir.string(), "720p Performance", true, true, cam_dev, &err);
+    if (started_dual) {
+        require(cap.active(), "capture is active with dual audio");
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        std::string saved_file;
+        const bool stopped = cap.stop(&saved_file, &err);
+        require(stopped, "dual audio capture stopped cleanly");
+        require(!cap.active(), "capture is idle after stop");
+        require(!saved_file.empty() && fk::fs::exists(saved_file),
+                "saved dual audio file exists on disk");
+        require(fk::fs::file_size(saved_file) > 0, "saved dual audio file has non-zero size");
     }
 }
 } // namespace

@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
@@ -79,9 +80,8 @@ fs::path VideoCapture::resolve_save_dir(const std::string& path_str) {
     return p;
 }
 
-bool VideoCapture::start(const std::string& save_dir, const std::string& quality,
-                         bool record_game_audio, bool record_mic,
-                         const std::string& device, std::string* error) {
+bool VideoCapture::start(const std::string& save_dir, const std::string& quality, bool record_game_audio,
+                         bool record_mic, const std::string& device, std::string* error) {
     if (active()) {
         if (error) {
             *error = "Recording is already in progress";
@@ -120,43 +120,89 @@ bool VideoCapture::start(const std::string& save_dir, const std::string& quality
     std::strftime(name_buf, sizeof(name_buf), "Recording_%Y-%m-%d_%H-%M-%S.mp4", &tm_buf);
     const fs::path out_file = dir / name_buf;
 
-    std::vector<std::string> args = {"ffmpeg", "-y",          "-f",        "v4l2", "-input_format",
-                                     "rgb24",  "-video_size", "1920x1080", "-i",   video_dev};
+    std::vector<std::string> args = {"ffmpeg",
+                                     "-y",
+                                     "-thread_queue_size",
+                                     "1024",
+                                     "-use_wallclock_as_timestamps",
+                                     "1",
+                                     "-f",
+                                     "v4l2",
+                                     "-input_format",
+                                     "rgb24",
+                                     "-video_size",
+                                     "1920x1080",
+                                     "-i",
+                                     video_dev};
+
+    const bool scale_720p = (quality == "720p Performance");
 
     if (record_game_audio && record_mic) {
-        args.insert(args.end(), {"-f", "pulse", "-i", "@DEFAULT_MONITOR@",
-                                 "-f", "pulse", "-i", "default",
-                                 "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=longest[aout]",
-                                 "-map", "0:v",
-                                 "-map", "[aout]"});
+        args.insert(args.end(), {"-thread_queue_size", "1024", "-f", "pulse", "-i", "@DEFAULT_MONITOR@",
+                                 "-thread_queue_size", "1024", "-f", "pulse", "-i", "default"});
+        if (scale_720p) {
+            args.insert(
+                args.end(),
+                {"-filter_complex",
+                 "[0:v]scale=1280:720[vout];"
+                 "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[amixed];"
+                 "[amixed]aresample=async=1[aout]",
+                 "-map", "[vout]", "-map", "[aout]"});
+        } else {
+            args.insert(
+                args.end(),
+                {"-filter_complex",
+                 "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[amixed];"
+                 "[amixed]aresample=async=1[aout]",
+                 "-map", "0:v", "-map", "[aout]"});
+        }
     } else if (record_game_audio) {
-        args.insert(args.end(), {"-f", "pulse", "-i", "@DEFAULT_MONITOR@",
-                                 "-map", "0:v",
-                                 "-map", "1:a"});
+        args.insert(args.end(),
+                    {"-thread_queue_size", "1024", "-f", "pulse", "-i", "@DEFAULT_MONITOR@"});
+        if (scale_720p) {
+            args.insert(args.end(),
+                        {"-filter_complex", "[0:v]scale=1280:720[vout];[1:a]aresample=async=1[aout]",
+                         "-map", "[vout]", "-map", "[aout]"});
+        } else {
+            args.insert(args.end(), {"-filter_complex", "[1:a]aresample=async=1[aout]", "-map", "0:v",
+                                     "-map", "[aout]"});
+        }
     } else if (record_mic) {
-        args.insert(args.end(), {"-f", "pulse", "-i", "default",
-                                 "-map", "0:v",
-                                 "-map", "1:a"});
+        args.insert(args.end(), {"-thread_queue_size", "1024", "-f", "pulse", "-i", "default"});
+        if (scale_720p) {
+            args.insert(args.end(),
+                        {"-filter_complex", "[0:v]scale=1280:720[vout];[1:a]aresample=async=1[aout]",
+                         "-map", "[vout]", "-map", "[aout]"});
+        } else {
+            args.insert(args.end(), {"-filter_complex", "[1:a]aresample=async=1[aout]", "-map", "0:v",
+                                     "-map", "[aout]"});
+        }
+    } else {
+        if (scale_720p) {
+            args.insert(args.end(), {"-vf", "scale=1280:720", "-map", "0:v", "-an"});
+        } else {
+            args.insert(args.end(), {"-map", "0:v", "-an"});
+        }
     }
 
-    // Video encoding settings
-    args.insert(args.end(), {"-c:v", "libx264"});
+    // Video encoding settings:
+    // Limit libx264 worker threads to 2 and tune zerolatency to avoid saturating ARM CPU cores,
+    // preserving full performance for the VR game and compositor.
+    args.insert(args.end(),
+                {"-c:v", "libx264", "-tune", "zerolatency", "-threads", "2", "-pix_fmt", "yuv420p"});
     if (quality == "720p Performance") {
-        args.insert(args.end(), {"-vf", "scale=1280:720", "-preset", "ultrafast", "-crf", "24",
-                                 "-pix_fmt", "yuv420p"});
+        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "24"});
     } else if (quality == "1080p Ultra") {
-        args.insert(args.end(), {"-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"});
+        args.insert(args.end(), {"-preset", "veryfast", "-crf", "18"});
     } else if (quality == "1080p Standard") {
-        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p"});
+        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "24"});
     } else {
         // Default: 1080p High
-        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p"});
+        args.insert(args.end(), {"-preset", "ultrafast", "-crf", "20"});
     }
 
     if (record_game_audio || record_mic) {
         args.insert(args.end(), {"-c:a", "aac", "-b:a", "128k"});
-    } else {
-        args.push_back("-an");
     }
 
     args.push_back(out_file.string());
@@ -181,6 +227,11 @@ bool VideoCapture::start(const std::string& save_dir, const std::string& quality
     if (child == 0) {
         // Child process
         ::setsid();
+
+        // Lower process scheduling priority to nice 10 so gamescope compositor and
+        // the active VR game retain higher CPU scheduling precedence.
+        ::setpriority(PRIO_PROCESS, 0, 10);
+
         int devnull = ::open("/dev/null", O_RDONLY);
         if (devnull >= 0) {
             ::dup2(devnull, STDIN_FILENO);
