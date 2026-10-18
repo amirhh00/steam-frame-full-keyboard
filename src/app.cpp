@@ -559,31 +559,37 @@ std::vector<Control> App::controls() const {
         result.push_back({"features-defaults", "Reset to defaults", {650, 400, 280, 56}});
     } else {
         auto row = [&](const std::string& kind, const std::string& name, double y) {
-            result.push_back({kind + "-prev", "<", {40, y, 65, 48}});
-            result.push_back({kind + "-label", name, {115, y, 1370, 48}});
-            result.push_back({kind + "-next", ">", {1495, y, 65, 48}});
+            result.push_back({kind + "-prev", "<", {40, y, 65, 46}});
+            result.push_back({kind + "-label", name, {115, y, 1370, 46}});
+            result.push_back({kind + "-next", ">", {1495, y, 65, 46}});
         };
         row("capture-opt",
             "Camera recording button: " + std::string(pending_.capture_enabled ? "Enabled" : "Disabled"),
-            72);
+            60);
 
         row("capture-quality",
             "Video quality: " + pending_.capture_quality +
                 (pending_.capture_quality == "1080p High" ? " (recommended)" : ""),
-            132);
+            114);
 
-        row("capture-save-dir", "Save recordings to: " + pending_.capture_save_dir, 192);
+        row("capture-save-dir", "Save recordings to: " + pending_.capture_save_dir, 168);
+
+        row("capture-game-audio",
+            "Record game audio: " +
+                std::string(pending_.capture_game_audio ? "Enabled (captures game sound)"
+                                                        : "Disabled (no game sound)"),
+            222);
 
         row("capture-audio",
-            "Capture microphone: " +
-                std::string(pending_.capture_audio ? "Enabled (captures mic)" : "Disabled (video only)"),
-            252);
+            "Record microphone: " +
+                std::string(pending_.capture_audio ? "Enabled (captures voice)" : "Disabled (no voice)"),
+            276);
 
         const std::string dev_name = VideoCapture::detect_camera_device();
-        row("capture-device", "Camera source device: " + dev_name + " (SteamVR view)", 312);
+        row("capture-device", "Camera source device: " + dev_name + " (SteamVR view)", 330);
 
-        result.push_back({"apply", "Apply and save", {350, 400, 280, 56}});
-        result.push_back({"capture-defaults", "Reset to defaults", {650, 400, 280, 56}});
+        result.push_back({"apply", "Apply and save", {350, 400, 280, 54}});
+        result.push_back({"capture-defaults", "Reset to defaults", {650, 400, 280, 54}});
     }
     return result;
 }
@@ -1627,7 +1633,8 @@ void App::action(const std::string& id) {
         } else {
             std::string err;
             if (capture_->start(settings_.active.capture_save_dir, settings_.active.capture_quality,
-                                settings_.active.capture_audio, "", &err)) {
+                                settings_.active.capture_game_audio, settings_.active.capture_audio,
+                                "", &err)) {
                 last_capture_tick_ = monotonic_seconds();
                 status_ = "Recording camera [00:00] · Tap camera icon to stop";
             } else {
@@ -1826,6 +1833,9 @@ void App::action(const std::string& id) {
         }
         pending_.capture_save_dir = dirs[idx];
         dirty = true;
+    } else if (id == "capture-game-audio-prev" || id == "capture-game-audio-next") {
+        pending_.capture_game_audio = !pending_.capture_game_audio;
+        dirty = true;
     } else if (id == "capture-audio-prev" || id == "capture-audio-next") {
         pending_.capture_audio = !pending_.capture_audio;
         dirty = true;
@@ -1833,6 +1843,7 @@ void App::action(const std::string& id) {
         pending_.capture_enabled = true;
         pending_.capture_quality = "1080p High";
         pending_.capture_save_dir = "~/Videos/Recordings";
+        pending_.capture_game_audio = true;
         pending_.capture_audio = true;
         status_ = "Capture options reset to defaults";
         dirty = true;
@@ -1850,6 +1861,7 @@ void App::action(const std::string& id) {
         pending_.capture_enabled = true;
         pending_.capture_quality = "1080p High";
         pending_.capture_save_dir = "~/Videos/Recordings";
+        pending_.capture_game_audio = true;
         pending_.capture_audio = true;
         pending_.bumper_shift_enabled = true;
         status_ = "Feature options reset to defaults";

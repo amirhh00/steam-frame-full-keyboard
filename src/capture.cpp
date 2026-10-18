@@ -79,7 +79,8 @@ fs::path VideoCapture::resolve_save_dir(const std::string& path_str) {
     return p;
 }
 
-bool VideoCapture::start(const std::string& save_dir, const std::string& quality, bool record_audio,
+bool VideoCapture::start(const std::string& save_dir, const std::string& quality,
+                         bool record_game_audio, bool record_mic,
                          const std::string& device, std::string* error) {
     if (active()) {
         if (error) {
@@ -122,8 +123,20 @@ bool VideoCapture::start(const std::string& save_dir, const std::string& quality
     std::vector<std::string> args = {"ffmpeg", "-y",          "-f",        "v4l2", "-input_format",
                                      "rgb24",  "-video_size", "1920x1080", "-i",   video_dev};
 
-    if (record_audio) {
-        args.insert(args.end(), {"-f", "pulse", "-i", "default"});
+    if (record_game_audio && record_mic) {
+        args.insert(args.end(), {"-f", "pulse", "-i", "@DEFAULT_MONITOR@",
+                                 "-f", "pulse", "-i", "default",
+                                 "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=longest[aout]",
+                                 "-map", "0:v",
+                                 "-map", "[aout]"});
+    } else if (record_game_audio) {
+        args.insert(args.end(), {"-f", "pulse", "-i", "@DEFAULT_MONITOR@",
+                                 "-map", "0:v",
+                                 "-map", "1:a"});
+    } else if (record_mic) {
+        args.insert(args.end(), {"-f", "pulse", "-i", "default",
+                                 "-map", "0:v",
+                                 "-map", "1:a"});
     }
 
     // Video encoding settings
@@ -140,7 +153,7 @@ bool VideoCapture::start(const std::string& save_dir, const std::string& quality
         args.insert(args.end(), {"-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p"});
     }
 
-    if (record_audio) {
+    if (record_game_audio || record_mic) {
         args.insert(args.end(), {"-c:a", "aac", "-b:a", "128k"});
     } else {
         args.push_back("-an");

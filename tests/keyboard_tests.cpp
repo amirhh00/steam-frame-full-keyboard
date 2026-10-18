@@ -281,7 +281,8 @@ void profile_tests(const fk::Profiles& defaults) {
                 saved.active.speech_model == "ggml-small.en.bin" && saved.active.touch_typing_enabled &&
                 saved.active.proximity_grab_enabled && saved.active.haptics_enabled &&
                 saved.active.horizon_lock_enabled && saved.active.bumper_shift_enabled &&
-                !saved.active.world_float_enabled && saved.active.world_float_mode == "dynamic",
+                !saved.active.world_float_enabled && saved.active.world_float_mode == "dynamic" &&
+                saved.active.capture_game_audio && saved.active.capture_audio,
             "default feature options populated");
     fk::Selection custom_sel;
     custom_sel.layout = "en-us-full";
@@ -300,6 +301,8 @@ void profile_tests(const fk::Profiles& defaults) {
     custom_sel.bumper_shift_enabled = false;
     custom_sel.world_float_enabled = true;
     custom_sel.world_float_mode = "passive";
+    custom_sel.capture_game_audio = false;
+    custom_sel.capture_audio = false;
     fk::save_selection(directory.path, custom_sel);
     saved = fk::load_settings(directory.path, errors);
     require(!saved.active.voice_enabled && saved.active.speech_model == "ggml-tiny.en.bin" &&
@@ -308,7 +311,8 @@ void profile_tests(const fk::Profiles& defaults) {
                 !saved.active.touch_typing_enabled && !saved.active.proximity_grab_enabled &&
                 !saved.active.haptics_enabled && !saved.active.horizon_lock_enabled &&
                 !saved.active.bumper_shift_enabled && saved.active.world_float_enabled &&
-                saved.active.world_float_mode == "passive",
+                saved.active.world_float_mode == "passive" && !saved.active.capture_game_audio &&
+                !saved.active.capture_audio,
             "custom feature options saved and reloaded");
     std::ifstream file(directory.path / "config.json");
     const std::string content((std::istreambuf_iterator<char>(file)), {});
@@ -407,7 +411,8 @@ void app_tests() {
     click_control("capture-opt-next");      // Toggles capture_enabled off
     click_control("capture-quality-next");  // Cycles to "1080p Standard"
     click_control("capture-save-dir-next"); // Cycles to "~/Videos"
-    click_control("capture-audio-next");    // Toggles capture_audio off
+    click_control("capture-game-audio-next"); // Toggles capture_game_audio off
+    click_control("capture-audio-next");      // Toggles capture_audio off
     click_control("apply");
 
     require(!app.voice_enabled(), "voice disabled after apply");
@@ -425,6 +430,7 @@ void app_tests() {
     require(!app.capture_enabled(), "capture disabled after apply");
     require(app.capture_quality() == "1080p Standard", "capture quality updated after apply");
     require(app.capture_save_dir() == "~/Videos", "capture save dir updated after apply");
+    require(!app.capture_game_audio(), "capture game audio disabled after apply");
     require(!app.capture_audio(), "capture audio disabled after apply");
 
     // When voice is disabled, dictate button must not be present in main toolbar
@@ -480,7 +486,8 @@ void app_tests() {
     click_control("apply");
     require(app.voice_enabled() && app.clipboard_enabled() && app.haptics_enabled() &&
                 app.capture_enabled() && app.capture_quality() == "1080p High" &&
-                app.capture_save_dir() == "~/Videos/Recordings" && app.capture_audio(),
+                app.capture_save_dir() == "~/Videos/Recordings" && app.capture_game_audio() &&
+                app.capture_audio(),
             "feature defaults restored");
 
     // Capture button should now be present in main toolbar
@@ -712,7 +719,7 @@ void capture_tests() {
     require(!cap.active(), "capture starts idle");
 
     std::string err;
-    const bool started = cap.start(save_dir.string(), "1080p Standard", false, cam_dev, &err);
+    const bool started = cap.start(save_dir.string(), "1080p Standard", false, false, cam_dev, &err);
     if (started) {
         require(cap.active(), "capture is active after start");
         std::this_thread::sleep_for(std::chrono::milliseconds(250));

@@ -28,8 +28,8 @@ class VideoCapture {
 
     // Starts video capture using ffmpeg in a separate child process.
     // Video quality: "1080p High", "1080p Standard", "720p Performance", "1080p Ultra"
-    bool start(const std::string& save_dir, const std::string& quality, bool record_audio,
-               const std::string& device, std::string* error = nullptr);
+    bool start(const std::string& save_dir, const std::string& quality, bool record_game_audio,
+               bool record_mic, const std::string& device, std::string* error = nullptr);
 
     // Stops recording cleanly by sending SIGINT to ffmpeg so the MP4 container is finalized.
     bool stop(std::string* saved_path = nullptr, std::string* error = nullptr);

@@ -164,6 +164,9 @@ Selection selection(json_object* object) {
     }
     s.capture_quality = text(object, "capture_quality", s.capture_quality, true);
     s.capture_save_dir = text(object, "capture_save_dir", s.capture_save_dir, true);
+    if (auto* cga = field(object, "capture_game_audio", json_type_boolean, true)) {
+        s.capture_game_audio = json_object_get_boolean(cga);
+    }
     if (auto* ca = field(object, "capture_audio", json_type_boolean, true)) {
         s.capture_audio = json_object_get_boolean(ca);
     }
@@ -541,6 +544,8 @@ void save_selection(const fs::path& user_dir, const Selection& s) {
     json_object_object_add(active, "capture_quality", json_object_new_string(s.capture_quality.c_str()));
     json_object_object_add(active, "capture_save_dir",
                            json_object_new_string(s.capture_save_dir.c_str()));
+    json_object_object_add(active, "capture_game_audio",
+                           json_object_new_boolean(s.capture_game_audio));
     json_object_object_add(active, "capture_audio", json_object_new_boolean(s.capture_audio));
     json_object_object_add(active, "bumper_shift_enabled",
                            json_object_new_boolean(s.bumper_shift_enabled));

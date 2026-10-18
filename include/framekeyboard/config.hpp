@@ -45,7 +45,9 @@ struct Selection {
     bool capture_enabled{true};
     std::string capture_quality{"1080p High"};
     std::string capture_save_dir{"~/Videos/Recordings"};
+    bool capture_game_audio{true};
     bool capture_audio{true};
+    bool capture_mic() const { return capture_audio; }
     bool bumper_shift_enabled{true};
     bool world_float_enabled{false};
     std::string world_float_mode{"dynamic"};

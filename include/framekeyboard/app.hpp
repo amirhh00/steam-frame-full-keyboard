@@ -88,7 +88,9 @@ class App {
     bool capture_enabled() const { return settings_.active.capture_enabled; }
     const std::string& capture_quality() const { return settings_.active.capture_quality; }
     const std::string& capture_save_dir() const { return settings_.active.capture_save_dir; }
+    bool capture_game_audio() const { return settings_.active.capture_game_audio; }
     bool capture_audio() const { return settings_.active.capture_audio; }
+    bool capture_mic() const { return settings_.active.capture_audio; }
     bool capture_active() const { return capture_ && capture_->active(); }
     bool bumper_shift_enabled() const { return settings_.active.bumper_shift_enabled; }
     void toggle_shift_lock();
